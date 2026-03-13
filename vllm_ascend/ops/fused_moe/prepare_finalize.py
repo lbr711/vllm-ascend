@@ -36,7 +36,6 @@ from vllm_ascend.ops.fused_moe.moe_runtime_args import MoEPrepareOutput
 from vllm_ascend.quantization.quant_type import QuantType
 from vllm_ascend.utils import enable_sp, enable_sp_by_pass, npu_stream_switch
 
-
 class PrepareAndFinalize(ABC):
     """
     Abstract base class for MoE (Mixture-of-Experts) tensor preparation and finalization
