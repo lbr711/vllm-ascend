@@ -25,6 +25,8 @@ from vllm.distributed.parallel_state import (
     get_pcp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
+    get_ep_group,
+    get_tp_group
 )
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.fused_moe import FusedMoEConfig
@@ -35,7 +37,7 @@ from vllm_ascend.distributed.utils import fc3_all_gather_and_maybe_unpad_impl
 from vllm_ascend.ops.fused_moe.moe_runtime_args import MoEPrepareOutput
 from vllm_ascend.quantization.quant_type import QuantType
 from vllm_ascend.utils import enable_sp, enable_sp_by_pass, npu_stream_switch
-
+from vllm_ascend.distributed.parallel_state import get_mc2_group
 
 class PrepareAndFinalize(ABC):
     """
