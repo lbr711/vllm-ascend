@@ -34,8 +34,6 @@ from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, enable_dsa_cp, maybe_trans_
 from .base import AscendLinearScheme, AscendMoEScheme, QuantType, get_moe_num_logical_experts
 from .registry import register_scheme
 
-from vllm.utils import is_restore
-
 
 def scale_from_float_to_int64(scale):
     """Convert float32 scale to int64 representation."""
@@ -353,7 +351,6 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
         layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight.data, ACL_FORMAT_FRACTAL_NZ)
         layer.w13_weight_scale.data = layer.w13_weight_scale.data.view(layer.w13_weight_scale.data.shape[0], -1)
         
-        # layer.w13_weight_scale_fp32 = layer.w13_weight_scale.data.to(torch.float32)
         w13_weight_scale_fp32 = layer.w13_weight_scale.data.to(torch.float32)
         layer.register_parameter(
             'w13_weight_scale_fp32',
@@ -367,8 +364,7 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
         # 更新注册的参数
         fused_w1_scale = scale_from_float_to_int64(layer.w13_weight_scale.data)
         fused_w2_scale = scale_from_float_to_int64(layer.w2_weight_scale.data)
-        
-        # 方法2：重新注册参数（如果需要改变形状或设备）
+
         layer.register_parameter(
             'fused_w1_scale',
             torch.nn.Parameter(fused_w1_scale, requires_grad=False)
