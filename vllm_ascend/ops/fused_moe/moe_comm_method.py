@@ -53,6 +53,33 @@ def setup_moe_comm_method(moe_config):
     _MoECommMethods[MoECommType.FUSED_MC2] = FusedMC2CommImpl(moe_config)
 
 
+def refresh_moe_comm_methods():
+    """Update the cached HCCL communicator name in MC2 token dispatchers.
+
+    Must be called after distributed process groups are destroyed and
+    re-created (e.g. snapshot restore) so that the ``group_ep`` parameter
+    passed to ``npu_moe_distribute_dispatch`` points to the new HCCL
+    communicator instead of the stale pre-snapshot one.
+
+    Only the comm-name field is patched; the rest of the dispatcher state
+    (global_bs, ep_world_size, …) is derived from the config and does not
+    change across a snapshot restore.
+    """
+    if not _MoECommMethods:
+        return
+
+    from vllm_ascend.distributed.parallel_state import get_mc2_group
+    device_group = get_mc2_group().device_group
+    local_rank = torch.distributed.get_rank(group=device_group)
+    backend = device_group._get_backend(torch.device("npu"))
+    new_comm_name = backend.get_hccl_comm_name(local_rank)
+
+    for comm in _MoECommMethods.values():
+        dispatcher = getattr(comm, "token_dispatcher", None)
+        if dispatcher is not None and hasattr(dispatcher, "moe_all_to_all_group_name"):
+            dispatcher.moe_all_to_all_group_name = new_comm_name
+
+
 def set_gmmswigluquant_method():
     from vllm_ascend.ascend_config import get_ascend_config
 

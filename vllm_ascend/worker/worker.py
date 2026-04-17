@@ -464,7 +464,7 @@ class NPUWorker(WorkerBase):
         # 如果是DEBUG会引入torchair库中的一个BUG
         dist.set_debug_level(dist.DebugLevel.INFO)
         rebuild_time_start = time.time()
-        
+
         # step 1 销毁通信域
         logger.info(f"--- destroy group rank{self.rank} start at {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}")
         self.clean_up()
@@ -475,12 +475,32 @@ class NPUWorker(WorkerBase):
         logger.info(f"call _init_worker_distributed_environment with parallel_config {str(self.parallel_config)}")
         logger.info(f"old url {self.distributed_init_method}, add 1 to port")
         import urllib.parse
-        init_method_res = urllib.parse.urlparse(self.distributed_init_method)
-        new_method = urllib.parse.urlunparse(init_method_res._replace(netloc=f"{init_method_res.hostname}:{init_method_res.port+1}"))
+        # 重建DP的通信域, self.distributed_init_method需要使用DP rank0的IP
+        parsed = urllib.parse.urlparse(self.distributed_init_method)
+        master_ip = (
+            self.vllm_config.parallel_config.data_parallel_master_ip
+            or os.environ.get('HCCL_IF_IP', parsed.hostname)
+        )
+        new_method = urllib.parse.urlunparse(
+            parsed._replace(netloc=f"{master_ip}:{parsed.port + 1}")
+        )
+
+        logger.info("rank %d: init_method %s -> %s", self.rank,
+                     self.distributed_init_method, new_method)
         self.distributed_init_method = new_method
-        
-        with (((set_current_vllm_config(self.vllm_config)))): 
+
+        with set_current_vllm_config(self.vllm_config):
             self._init_worker_distributed_environment()
+
+            # MoE comm methods (MC2CommImpl, FusedMC2CommImpl, …) cache the
+            # HCCL communicator name obtained from the old MC2 group at
+            # construction time.  After the groups are re-created above, those
+            # cached names are stale — patch them with the new comm name.
+            from vllm_ascend.ops.fused_moe.moe_comm_method import (
+                refresh_moe_comm_methods,
+            )
+            refresh_moe_comm_methods()
+
         logger.info(f"[time] rank {self.rank} rebuild_group cost {time.time() - rebuild_time_start}s")
 
     # 快照restore之后信息刷新：1. 刷新HCCL_IF_IP环境变量的值为新调度的pod ip 2. 刷新data_parallel_master_ip的值为最新的主节点pod ip
@@ -534,6 +554,37 @@ class NPUWorker(WorkerBase):
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
+
+    def recompile_graph(self) -> None:
+        """Re-capture ACL graphs after snapshot restore.
+
+        Clears stale graph state, then delegates to the normal
+        compile_or_warm_up_model path with DP allreduce temporarily
+        disabled (each DP partition recompiles independently).
+        """
+        import torch._dynamo
+        from vllm_ascend.compilation.acl_graph import (
+            clear_all_aclgraph_entries,
+            reset_draft_graph_params,
+            reset_graph_params,
+        )
+
+        clear_all_aclgraph_entries()
+        reset_graph_params()
+        reset_draft_graph_params()
+
+        # torch.compile captures ProcessGroup objects as constants during
+        # tracing.  After snapshot restore the old groups hold stale
+        # TCPStore connections (pointing to the pre-snapshot hostname).
+        # Clearing dynamo's cache forces re-tracing on the next forward
+        # so that the newly created ProcessGroup objects are captured.
+        torch._dynamo.reset()
+
+        self.model_runner._skip_dp_allreduce_for_recompile = True
+        try:
+            self.compile_or_warm_up_model()
+        finally:
+            self.model_runner._skip_dp_allreduce_for_recompile = False
 
     def _warm_up_atb(self):
         x = torch.rand((2, 4), dtype=torch.float16).npu()

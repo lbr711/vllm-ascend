@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import dataclasses
+import weakref
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from vllm.logger import logger
 from vllm.platforms import current_platform
 
 from ..utils import weak_ref_tensors
+
+_all_aclgraph_wrappers: weakref.WeakSet["ACLGraphWrapper"] = weakref.WeakSet()
 
 
 @dataclasses.dataclass
@@ -84,6 +87,8 @@ class ACLGraphWrapper:
         # the entries for different batch descriptors that we need to capture
         # aclgraphs for.
         self.concrete_aclgraph_entries: dict[BatchDescriptor, ACLGraphEntry] = {}
+
+        _all_aclgraph_wrappers.add(self)
 
     def __getattr__(self, key: str):
         # allow accessing the attributes of the runnable.
@@ -288,3 +293,66 @@ def update_draft_graph_params_workspaces(num_tokens: int, workspace: Any):
 
 def get_draft_graph_params():
     return _draft_graph_params
+
+
+def clear_all_aclgraph_entries():
+    """Clear captured ACL graphs from all registered ACLGraphWrapper instances.
+    This must be called before recapturing graphs (e.g. after snapshot restore)
+    so that capture_model will trigger fresh captures instead of replaying
+    stale graphs.
+
+    Each NPUGraph is explicitly reset before dropping the reference so that
+    its C++ resources (and the associated graph-pool allocations) are released
+    deterministically rather than relying on the garbage collector.
+    """
+    import gc
+
+    # Ensure all pending NPU work finishes before touching graph objects.
+    try:
+        torch.npu.synchronize()
+    except Exception:
+        pass
+
+    for wrapper in _all_aclgraph_wrappers:
+        for entry in wrapper.concrete_aclgraph_entries.values():
+            if entry.aclgraph is not None:
+                try:
+                    entry.aclgraph.reset()
+                except Exception:
+                    pass
+                entry.aclgraph = None
+            entry.output = None
+        wrapper.concrete_aclgraph_entries.clear()
+
+    gc.collect()
+    try:
+        torch.npu.empty_cache()
+    except Exception:
+        pass
+
+    # Force a new graph pool so that we don't inherit stale pool state from
+    # before the snapshot.  Reset the class-level cache first, then eagerly
+    # create the replacement and propagate it into every live wrapper.
+    current_platform.__class__._global_graph_pool = None
+    new_pool = current_platform.get_global_graph_pool()
+    for wrapper in _all_aclgraph_wrappers:
+        wrapper.graph_pool = new_pool
+
+
+def _reset_params(params: GraphParams | None) -> None:
+    """Clear all per-size entries in *params* so capture_model can repopulate."""
+    if params is None:
+        return
+    for size in params.events:
+        params.events[size] = []
+        params.workspaces[size] = None
+        params.handles[size] = []
+        params.attn_params[size] = []
+
+
+def reset_graph_params():
+    _reset_params(_graph_params)
+
+
+def reset_draft_graph_params():
+    _reset_params(_draft_graph_params)
