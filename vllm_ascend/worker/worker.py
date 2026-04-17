@@ -540,7 +540,7 @@ class NPUWorker(WorkerBase):
         # 如果是DEBUG会引入torchair库中的一个BUG
         dist.set_debug_level(dist.DebugLevel.INFO)
         rebuild_time_start = time.time()
-        
+
         # step 1 销毁通信域
         logger.info(f"--- destroy group rank{self.rank} start at {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}")
         self.clean_up()
@@ -551,12 +551,23 @@ class NPUWorker(WorkerBase):
         logger.info(f"call _init_worker_distributed_environment with parallel_config {str(self.parallel_config)}")
         logger.info(f"old url {self.distributed_init_method}, add 1 to port")
         import urllib.parse
-        init_method_res = urllib.parse.urlparse(self.distributed_init_method)
-        new_method = urllib.parse.urlunparse(init_method_res._replace(netloc=f"{init_method_res.hostname}:{init_method_res.port+1}"))
+        # 重建DP的通信域, self.distributed_init_method需要使用DP rank0的IP
+        parsed = urllib.parse.urlparse(self.distributed_init_method)
+        master_ip = (
+            self.vllm_config.parallel_config.data_parallel_master_ip
+            or os.environ.get('HCCL_IF_IP', parsed.hostname)
+        )
+        new_method = urllib.parse.urlunparse(
+            parsed._replace(netloc=f"{master_ip}:{parsed.port + 1}")
+        )
+
+        logger.info("rank %d: init_method %s -> %s", self.rank,
+                     self.distributed_init_method, new_method)
         self.distributed_init_method = new_method
-        
-        with (((set_current_vllm_config(self.vllm_config)))): 
+
+        with set_current_vllm_config(self.vllm_config):
             self._init_worker_distributed_environment()
+
         logger.info(f"[time] rank {self.rank} rebuild_group cost {time.time() - rebuild_time_start}s")
 
     # 快照restore之后信息刷新：1. 刷新HCCL_IF_IP环境变量的值为新调度的pod ip 2. 刷新data_parallel_master_ip的值为最新的主节点pod ip
@@ -668,6 +679,28 @@ class NPUWorker(WorkerBase):
                 0.0,
             ),
         )
+
+    def recapture_graph(self) -> None:
+        """Clear stale ACL graphs and re-capture after snapshot restore.
+
+        Unlike compile_or_warm_up_model(), this skips the warmup / dynamo
+        recompilation phase and only re-records NPU graphs.  The torch.compile
+        cache and model weights are preserved from the snapshot, so only the
+        NPU-side graph resources (HCCL handles, events, streams) need to be
+        refreshed.
+        """
+        from vllm_ascend.compilation.acl_graph import (
+            clear_all_aclgraph_entries,
+            reset_draft_graph_params,
+            reset_graph_params,
+        )
+
+        clear_all_aclgraph_entries()
+        reset_graph_params()
+        reset_draft_graph_params()
+
+        if not self.model_config.enforce_eager:
+            self.model_runner.capture_model()
 
     def _warm_up_atb(self):
         x = torch.rand((2, 4), dtype=torch.float16).npu()
