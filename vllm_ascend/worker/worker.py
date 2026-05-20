@@ -24,7 +24,8 @@ from types import NoneType
 
 import os, time
 from datetime import datetime
-from ctypes import CDLL
+from ctypes import CDLL, c_int, c_void_p
+from types import NoneType
 
 import torch
 import torch.nn as nn
@@ -490,11 +491,13 @@ class NPUWorker(WorkerBase):
 
     def aclrt_snapshot_process_lock(self) -> None:
         # 加载.so文件
-        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_rt.so")
+        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann/aarch64-linux/lib64/libacl_rt.so")
         
         # 返回为0成功，其他为失败
         # 调用aclrtSnapShotProcessLock()，将卡上的任务锁住
-        aclrtSnapShotProcessLock_result = npu_aclrt_lib.aclrtSnapShotProcessLock()
+        npu_aclrt_lib.aclrtSnapShotProcessLock.argtypes = [c_int, c_void_p]
+        npu_aclrt_lib.aclrtSnapShotProcessLock.restype = c_int
+        aclrtSnapShotProcessLock_result = npu_aclrt_lib.aclrtSnapShotProcessLock(os.getpid(), None)
         if aclrtSnapShotProcessLock_result == 0:
             logger.info(f"[snapshot] [worker] [rank:{self.rank}] aclrtSnapShotProcessLock success.")
         else:
@@ -502,9 +505,11 @@ class NPUWorker(WorkerBase):
 
     def aclrt_snapshot_process_backup(self) -> None:
         # 加载.so文件
-        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_rt.so")
+        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann/aarch64-linux/lib64/libacl_rt.so")
         # 调用aclrtSnapShotProcessBackup() 
-        aclrtSnapShotProcessBackup_result = npu_aclrt_lib.aclrtSnapShotProcessBackup()
+        npu_aclrt_lib.aclrtSnapShotProcessBackup.argtypes = [c_int, c_void_p]
+        npu_aclrt_lib.aclrtSnapShotProcessBackup.restype = c_int
+        aclrtSnapShotProcessBackup_result = npu_aclrt_lib.aclrtSnapShotProcessBackup(os.getpid(), None)
         if aclrtSnapShotProcessBackup_result == 0:
             logger.info(f"[snapshot] [worker] [rank:{self.rank}] aclrtSnapShotProcessBackup success.")
         else:
@@ -512,9 +517,11 @@ class NPUWorker(WorkerBase):
 
     def aclrt_snapshot_process_restore(self) -> None:
         # 加载.so文件
-        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_rt.so")
+        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann/aarch64-linux/lib64/libacl_rt.so")
         # 调用aclrtSnapShotProcessRestore()
-        aclrtSnapShotProcessRestore_result = npu_aclrt_lib.aclrtSnapShotProcessRestore()
+        npu_aclrt_lib.aclrtSnapShotProcessRestore.argtypes = [c_int, c_void_p]
+        npu_aclrt_lib.aclrtSnapShotProcessRestore.restype = c_int
+        aclrtSnapShotProcessRestore_result = npu_aclrt_lib.aclrtSnapShotProcessRestore(os.getpid(), None)
         if aclrtSnapShotProcessRestore_result == 0:
             logger.info(f"[snapshot] [worker] [rank:{self.rank}] aclrtSnapShotProcessRestore success.")
         else:
@@ -522,24 +529,15 @@ class NPUWorker(WorkerBase):
 
     def aclrt_snapshot_process_unlock(self) -> None:
         # 加载.so文件
-        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_rt.so")
+        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann/aarch64-linux/lib64/libacl_rt.so")
         # 调用aclrtSnapShotProcessUnlock()
-        aclrtSnapShotProcessUnlock_result = npu_aclrt_lib.aclrtSnapShotProcessUnlock()
+        npu_aclrt_lib.aclrtSnapShotProcessUnlock.argtypes = [c_int, c_void_p]
+        npu_aclrt_lib.aclrtSnapShotProcessUnlock.restype = c_int
+        aclrtSnapShotProcessUnlock_result = npu_aclrt_lib.aclrtSnapShotProcessUnlock(os.getpid(), None)
         if aclrtSnapShotProcessUnlock_result == 0:
             logger.info(f"[snapshot] [worker] [rank:{self.rank}] aclrtSnapShotProcessUnlock success.")
         else:
             logger.error(f"[snapshot] [worker] [rank:{self.rank}] aclrtSnapShotProcessUnlock failed {aclrtSnapShotProcessUnlock_result}.")
-    
-    def acl_recover_all_hccl_tasks(self) -> None:
-        # 加载.so文件
-        npu_aclrt_lib = CDLL("/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_rt.so")
-        # 调用aclError aclRecoverAllHcclTasks(int32_t deviceId)
-        deviceId = torch.npu.current_device()
-        aclRecoverAllHcclTasks_result = npu_aclrt_lib.aclRecoverAllHcclTasks(deviceId)
-        if aclRecoverAllHcclTasks_result == 0:
-            logger.info(f"[snapshot] [worker] [rank:{self.rank}] aclRecoverAllHcclTasks for device: {deviceId} success.")
-        else:
-            logger.error(f"[snapshot] [worker] [rank:{self.rank}] aclRecoverAllHcclTasks for device: {deviceId} failed {aclRecoverAllHcclTasks_result}.")
 
     def dump_model(self, model_save_path=None) -> None:
         self.model_runner.dump_model(path=model_save_path)
