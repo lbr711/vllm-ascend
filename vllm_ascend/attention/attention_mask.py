@@ -41,7 +41,6 @@ class AttentionMaskBuilder:
         self.mla_mask = None
         self.chunked_prefill_attn_mask = None
         self.pcp_mla_mask = None
-        self.swa_mask = None
 
         self.attn_mask_restore_first = True
         self.splitfuse_attn_mask_restore_first = True
