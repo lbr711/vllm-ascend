@@ -366,6 +366,9 @@ def _reset_params(params: GraphParams | None) -> None:
         params.workspaces[size] = None
         params.handles[size] = []
         params.attn_params[size] = []
+        params.conv1d_params[size] = []
+        params.conv1d_handles[size] = []
+        params.conv1d_events[size] = []
 
 
 def reset_graph_params():
@@ -374,6 +377,10 @@ def reset_graph_params():
 
 def reset_draft_graph_params():
     _reset_params(_draft_graph_params)
+
+
+def reset_draft_graph_prefill_params():
+    _reset_params(_draft_graph_prefill_params)
 
 
 def clear_all_aclgraph_entries():

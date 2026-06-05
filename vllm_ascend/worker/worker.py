@@ -689,12 +689,14 @@ class NPUWorker(WorkerBase):
         from vllm_ascend.compilation.acl_graph import (
             clear_all_aclgraph_entries,
             reset_draft_graph_params,
+            reset_draft_graph_prefill_params,
             reset_graph_params,
         )
 
         clear_all_aclgraph_entries()
         reset_graph_params()
         reset_draft_graph_params()
+        reset_draft_graph_prefill_params()
 
         if not self.model_config.enforce_eager:
             self.model_runner.capture_model()
