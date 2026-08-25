@@ -90,9 +90,14 @@ class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
         # must use fp32 to avoid accuracy degradation in dsv4.
         if getattr(layer, "precast_fp32_weight", False):
             weight_fp32 = layer.weight.data.to(torch.float32)
-            layer.weight_fp32 = (
-                weight_fp32 if keep_nd_weight or skip_weight_nz_conversion else maybe_trans_nz(weight_fp32)
-            )
+            if not keep_nd_weight and not skip_weight_nz_conversion:
+                weight_fp32 = maybe_trans_nz(weight_fp32)
+            if keep_nd_weight:
+                layer.weight_fp32 = weight_fp32
+            elif "weight_fp32" in layer._buffers:
+                layer.weight_fp32.data = weight_fp32
+            else:
+                layer.register_buffer("weight_fp32", weight_fp32, persistent=True)
         if "conv1d" not in layer.prefix and not skip_weight_nz_conversion:
             # 310P torch_npu rejects FRACTAL_NZ matmul when the weight-side
             # matrix has n=1 or k=1. Keep scalar gates such as Qwen MoE's
