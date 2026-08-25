@@ -43,6 +43,16 @@ NON_FULL_CUDAGRAPH_MODES = [
 ]
 
 
+def test_restore_runtime_buffers_restores_arange() -> None:
+    proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
+    proposer.arange_cpu = torch.arange(8, dtype=torch.int32)
+    proposer.arange = torch.zeros(8, dtype=torch.int32)
+
+    proposer.restore_runtime_buffers()
+
+    torch.testing.assert_close(proposer.arange, proposer.arange_cpu)
+
+
 class TestDisablePaddedDrafterBatchWithFullGraph:
     """Guard: ``disable_padded_drafter_batch=True`` + cuda graph + any full
     cudagraph mode must raise ``NotImplementedError``.
