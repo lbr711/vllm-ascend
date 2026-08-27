@@ -709,11 +709,6 @@ class AscendMoERunner(MoERunner):  # type: ignore[no-redef]
         lora_context = getattr(self.routed_experts, "_ascend_moe_lora_context", None)
         if lora_context is not None:
             sync_lora_context(self._quant_method, lora_context)
-        
-        _EXTRA_CTX.moe_comm_method.prepare_finalize.moe_config.tp_group = get_tp_group()
-        _EXTRA_CTX.moe_comm_method.prepare_finalize.moe_config.dp_group = get_dp_group()
-        _EXTRA_CTX.moe_comm_method.prepare_finalize.moe_config.ep_group = get_ep_group()
-        _EXTRA_CTX.moe_comm_method.prepare_finalize.moe_config.mc2_group = get_mc2_group()
 
         prepare_output = _EXTRA_CTX.moe_comm_method.prepare(
             hidden_states=hidden_states,
