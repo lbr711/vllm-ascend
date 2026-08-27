@@ -3721,14 +3721,7 @@ class NPUModelRunner(GPUModelRunner):
         # module-level device tensors), which the per-model reload above cannot
         # reach via ``named_modules()``.
         self._reload_global_non_persistent_state()
-        # FULL Graph updates attention runtime parameters on streams created
-        # during model loading. Snapshot restore invalidates those streams, so
-        # replace them before recapturing the target and draft graphs.
-        self._reset_resume_graph_update_streams()
-        # Snapshot restore invalidates low-level NPU event handles created before
-        # suspend. MTP/spec-decode paths synchronize these events on the first
-        # post-resume request; stale handles cause aclrtSynchronizeEvent failures.
-        self._reset_resume_npu_event_handles()
+        self._clear_resume_spec_decode_carryover()
         self.restore_drafter_runtime_buffers()
         # Clear per-builder runtime metadata cache (MLA/DSA/etc.) so the first
         # post-resume forward cannot read stale host/device tensors.
@@ -3746,108 +3739,7 @@ class NPUModelRunner(GPUModelRunner):
         if isinstance(self.drafter, AscendEagleProposer):
             self.drafter.restore_runtime_buffers()
 
-    def _reset_resume_graph_update_streams(self) -> None:
-        if hasattr(self, "update_stream"):
-            self.update_stream = torch.npu.Stream()
-
-        drafter = getattr(self, "drafter", None)
-        if drafter is not None and hasattr(drafter, "update_stream"):
-            drafter.update_stream = torch.npu.Stream()
-
-    def _reset_resume_npu_event_handles(self) -> None:
-        # Async seq-lens copy event used by MTP/spec decode metadata path.
-        self._seq_lens_cpu_event = None
-        self._seq_lens_cpu_event_pending = False
-
-        # ``sampling_done_event`` is recreated lazily every sampling step
-        # (see ``self.sampling_done_event = torch.npu.Event()`` in the sample
-        # path), so clearing it here is safe.
-        self.sampling_done_event = None
-
-        # ``valid_sampled_token_count_event`` and ``num_accepted_tokens_event``
-        # are created EXACTLY ONCE at init (base gpu_model_runner: guarded by
-        # ``num_spec_tokens`` / ``use_async_scheduling``) and are NEVER
-        # recreated afterwards. They must therefore be REPLACED with a fresh
-        # handle here, not set to None.
-        #
-        # Root cause of the post-resume "MTP acceptance == 0%" (and garbled
-        # output) regression: a previous version of this reset set these to
-        # None. But ``_copy_valid_sampled_token_count`` early-returns when
-        # ``valid_sampled_token_count_event is None`` -- and the assignment
-        # ``self.input_batch.prev_sampled_token_ids = next_token_ids...`` lives
-        # AFTER that guard. So a None event silently skips setting
-        # ``prev_sampled_token_ids`` on every post-resume step. With it None,
-        # ``_prepare_input_ids`` takes the non-async early return and NEVER
-        # scatters the sampled seed token or the draft tokens into
-        # ``input_ids.gpu``; those positions keep their -1/0 placeholders.
-        # The rejection sampler then verifies against -1 drafts every step ->
-        # acceptance collapses to 0%, and the (also unscattered) seed corrupts
-        # the main-model input. Recreating a live event restores the
-        # cold-start invariant so ``prev_sampled_token_ids`` is set again.
-        if getattr(self, "valid_sampled_token_count_event", None) is not None:
-            self.valid_sampled_token_count_event = torch.npu.Event()
-        if getattr(self, "num_accepted_tokens_event", None) is not None:
-            self.num_accepted_tokens_event = torch.npu.Event()
-
-        # Draft/spec events may be asserted as non-None in async scheduling
-        # paths; recreate fresh handles when attributes exist.
-        if hasattr(self, "draft_token_ids_event"):
-            self.draft_token_ids_event = torch.npu.Event()
-        if hasattr(self, "_num_valid_draft_tokens_event"):
-            self._num_valid_draft_tokens_event = torch.npu.Event()
-
-        # [snapshot] Recreate the async-scheduling copy STREAMS.
-        #
-        # Root cause of the post-resume "MTP acceptance == 0%" regression:
-        # ``aclrtSnapShotProcessRestore`` invalidates low-level NPU stream
-        # handles exactly like it does event handles. With async scheduling +
-        # spec decode, the drafter's proposed tokens are copied GPU->CPU on
-        # ``draft_token_ids_copy_stream`` (ordered by ``draft_token_ids_event``)
-        # and read back next step via ``take_draft_token_ids``. If the stream
-        # handle is stale, the first post-resume copy is enqueued on a dead
-        # stream and never lands, so ``draft_token_ids_cpu`` keeps its stale /
-        # placeholder (-1) content. The scheduler then verifies against -1
-        # drafts every step -> the rejection sampler rejects everything ->
-        # acceptance collapses to 0% (msProbe dumps show the drafter FORWARD is
-        # bit-identical pre/post, but the draft tokens reaching the rejection
-        # sampler are all -1 after resume). Recreating the streams restores the
-        # cold-start invariant so the async draft copy lands correctly.
-        for stream_attr in (
-            "draft_token_ids_copy_stream",
-            "valid_sampled_token_count_copy_stream",
-        ):
-            if getattr(self, stream_attr, None) is not None:
-                try:
-                    setattr(self, stream_attr, torch.npu.Stream())
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[restore model] failed to recreate %s: %s: %s",
-                        stream_attr, type(exc).__name__, exc,
-                    )
-
-        # ``transfer_event`` orders the sampled-token GPU->CPU copy; a stale
-        # handle here can also stall/mis-order the async post-sample path.
-        if getattr(self, "transfer_event", None) is not None:
-            self.transfer_event = torch.npu.Event()
-
-        # Re-allocate the pinned draft-token host buffer. After restore its
-        # page-locked (device-registered) mapping can be stale, so a
-        # ``non_blocking`` copy into it may silently not land, leaving stale /
-        # placeholder drafts. A fresh allocation restores a clean registration.
-        if getattr(self, "draft_token_ids_cpu", None) is not None:
-            try:
-                self.draft_token_ids_cpu = torch.empty(
-                    (self.max_num_reqs, self.num_spec_tokens),
-                    dtype=torch.int64,
-                    device="cpu",
-                    pin_memory=self.pin_memory,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[restore model] failed to re-alloc draft_token_ids_cpu: %s: %s",
-                    type(exc).__name__, exc,
-                )
-
+    def _clear_resume_spec_decode_carryover(self) -> None:
         # Drop any cross-step spec-decode carry-over captured at snapshot time.
         # The snapshot is taken while idle, but resetting defensively guarantees
         # the first post-resume step cannot inject stale (pre-snapshot) drafts
