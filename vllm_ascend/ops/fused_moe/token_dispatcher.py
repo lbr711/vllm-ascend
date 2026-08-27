@@ -47,6 +47,7 @@ from vllm_ascend.ops.fused_moe.moe_runtime_args import (
     TMoECombineMetadata,
 )
 from vllm_ascend.quantization.quant_type import QuantType
+from vllm_ascend.snapshot.moe_trace import trace_value
 from vllm_ascend.utils import (
     AscendDeviceType,
     get_ascend_device_type,
@@ -245,6 +246,15 @@ class TokenDispatcherWithMC2(MoETokenDispatcher[MoEMC2CombineMetadata]):
         local_rank = torch.distributed.get_rank(group=device_group)
         backend = device_group._get_backend(torch.device("npu"))
         self.moe_all_to_all_group_name = backend.get_hccl_comm_name(local_rank)
+        trace_value(
+            "dispatch.config",
+            {
+                "group_ep": self.moe_all_to_all_group_name,
+                "ep_rank_id": self.ep_rank_id,
+                "ep_world_size": self.ep_world_size,
+                "global_bs": self.global_bs,
+            },
+        )
 
         kwargs_mc2 = self.get_dispatch_mc2_kwargs(token_dispatch_input)
         output = (

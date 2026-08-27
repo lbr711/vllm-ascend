@@ -28,6 +28,7 @@ from vllm_ascend.ascend_forward_context import _EXTRA_CTX, MoECommType, use_cann
 from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.ops.fused_moe.experts_selector import select_experts, zero_experts_compute
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
+from vllm_ascend.snapshot.moe_trace import trace_tensor, trace_value
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, enable_dsa_cp, maybe_trans_nz
 
 from .base import AscendLinearScheme, AscendMoEScheme, QuantType, get_moe_num_logical_experts
@@ -282,6 +283,8 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
         )
         assert topk_ids is not None
         assert topk_weights is not None
+        trace_tensor("routing.topk_ids", topk_ids, exact=True)
+        trace_tensor("routing.topk_weights", topk_weights, exact=True)
         if zero_expert_num > 0 and zero_expert_type is not None:
             topk_ids, topk_weights, zero_expert_result = zero_experts_compute(
                 expert_indices=topk_ids,
@@ -330,6 +333,20 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
             w2_scale = [layer.fused_w2_scale] if fused_scale_flag else [layer.w2_weight_scale]
             w1_scale_bias = [torch.tensor([], dtype=torch.float32)] if fused_scale_flag else None
             w2_scale_bias = [torch.tensor([], dtype=torch.float32)] if fused_scale_flag else None
+
+        trace_value(
+            "routing.config",
+            {
+                "top_k": top_k,
+                "num_logical_experts": num_logical_experts,
+                "global_redundant_expert_num": global_redundant_expert_num,
+                "dynamic_eplb": self.dynamic_eplb,
+            },
+        )
+        trace_tensor("routing.expert_map", expert_map, exact=True)
+        trace_tensor("routing.mc2_mask", mc2_mask, exact=True)
+        trace_tensor("expert.w13_weight_scale", w1_scale[0], exact=True)
+        trace_tensor("expert.w2_weight_scale", w2_scale[0], exact=True)
 
         final_hidden_states = moe_comm_method.fused_experts(
             fused_experts_input=build_fused_experts_input(

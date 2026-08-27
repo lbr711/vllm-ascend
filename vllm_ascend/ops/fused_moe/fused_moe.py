@@ -16,6 +16,7 @@
 #
 # ruff: noqa: E501
 from collections.abc import Callable
+from contextlib import nullcontext
 from copy import copy
 from dataclasses import dataclass, field
 from functools import wraps
@@ -34,6 +35,7 @@ from vllm.model_executor.layers.fused_moe.layer import (
     MoERunner,
 )
 from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
+from vllm.snapshot.utils import is_restore
 
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, MoECommType
@@ -47,6 +49,7 @@ from vllm_ascend.ops.fused_moe.moe_comm_method import AllGatherCommImpl, FusedEx
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.quantization.methods.base import get_moe_num_logical_experts
 from vllm_ascend.quantization.quant_type import QuantType
+from vllm_ascend.snapshot.moe_trace import trace_layer, trace_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_NZ,
     maybe_trans_nz,
@@ -398,6 +401,7 @@ class AscendMoERunner(MoERunner):  # type: ignore[no-redef]
             )
 
         self.enable_shared_expert_dp = ascend_config.enable_shared_expert_dp
+        self._snapshot_moe_trace_counts = {"cold": 0, "restore": 0}
         self.multistream_overlap_shared_expert = (
             ascend_config.multistream_overlap_shared_expert and shared_experts is not None
         )
@@ -980,7 +984,28 @@ class AscendMoERunner(MoERunner):  # type: ignore[no-redef]
         input_ids: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         with self._sequence_parallel_context():
-            if self.shared_experts is None:
-                return self.no_shared_forward_impl(hidden_states, router_logits)
-            else:
-                return self.shared_forward_impl(hidden_states, router_logits, shared_experts_input)
+            phase = "restore" if is_restore() else "cold"
+            call = self._snapshot_moe_trace_counts[phase]
+            should_trace = (
+                "layers.3." in self.layer_name
+                and _EXTRA_CTX.moe_comm_type == MoECommType.MC2
+                and not _EXTRA_CTX.in_profile_run
+                and not _EXTRA_CTX.capturing
+                and call < 16
+            )
+            context = trace_layer(self.layer_name, call) if should_trace else nullcontext()
+            with context:
+                trace_tensor("routing.hidden_states", hidden_states)
+                trace_tensor("routing.router_logits", router_logits)
+                if self.shared_experts is None:
+                    output = self.no_shared_forward_impl(hidden_states, router_logits)
+                else:
+                    output = self.shared_forward_impl(hidden_states, router_logits, shared_experts_input)
+                if isinstance(output, tuple):
+                    trace_tensor("runner.shared_out", output[0])
+                    trace_tensor("runner.routed_out", output[1])
+                else:
+                    trace_tensor("runner.routed_out", output)
+            if should_trace:
+                self._snapshot_moe_trace_counts[phase] += 1
+            return output
