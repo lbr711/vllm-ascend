@@ -402,9 +402,7 @@ def clear_graph_params_for_recapture() -> None:
     Unlike reset_graph_params(), this preserves the GraphParams objects so
     capture_model() can reuse the existing capture_sizes structure.
     """
-    for params in (_graph_params, _draft_graph_params, _draft_graph_prefill_params):
-        if params is None:
-            continue
+    for params in iter_graph_params():
         for size in params.events:
             params.events[size] = []
             params.workspaces[size] = None
