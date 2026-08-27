@@ -253,7 +253,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
     def restore_runtime_buffers(self) -> None:
         """Restore immutable device lookup buffers after snapshot resume."""
-        self.arange.copy_(self.arange_cpu)
+        self.arange.copy_(torch.from_numpy(self.token_arange_np[: self.arange.shape[0]]))
 
     def _raise_if_padded_drafter_batch_disabled_and_full_graph_enabled(self):
         if (

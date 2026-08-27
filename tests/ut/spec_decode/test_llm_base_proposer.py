@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
@@ -45,12 +46,12 @@ NON_FULL_CUDAGRAPH_MODES = [
 
 def test_restore_runtime_buffers_restores_arange() -> None:
     proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
-    proposer.arange_cpu = torch.arange(8, dtype=torch.int32)
+    proposer.token_arange_np = np.arange(8, dtype=np.int32)
     proposer.arange = torch.zeros(8, dtype=torch.int32)
 
     proposer.restore_runtime_buffers()
 
-    torch.testing.assert_close(proposer.arange, proposer.arange_cpu)
+    torch.testing.assert_close(proposer.arange, torch.from_numpy(proposer.token_arange_np))
 
 
 class TestDisablePaddedDrafterBatchWithFullGraph:
