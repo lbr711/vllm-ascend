@@ -55,6 +55,7 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8LinearMethod,
     AscendW8A8MXFP8DynamicLinearMethod,
 )
+from vllm_ascend.snapshot.tensor_state import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,
@@ -280,14 +281,7 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
         self.enable_dsa_cp = enable_dsa_cp()
 
     def reset_snapshot_runtime_state(self) -> None:
-        """[snapshot] Restore cold-start contents of reusable SFA metadata.
-
-        These tensors are plain builder attributes rather than module buffers,
-        so ``state_dict`` restore does not refresh them.  In particular, DSA-CP
-        and speculative decoding reuse the same length storage across steps.
-        Clear the complete allocations (not just the previous active prefix) so
-        the first post-resume request cannot observe snapshot-time tail values.
-        """
+        """Clear reusable request metadata after restore."""
         self.actual_seq_lengths_query.zero_()
         self.actual_seq_lengths_key.zero_()
         for buffers in (
@@ -759,12 +753,9 @@ class AscendSFAImpl(MLAAttentionImpl):
                     dtype=torch.bfloat16,
                     device=self.weight_dq.device,
                 )
-        
-        # Persist absorbed weights AFTER final reshape/NZ transform. SFA always
-        # disposes ``kv_b_proj`` above, so these tensors cannot be re-derived from
-        # ``kv_b_proj.weight`` on snapshot resume (unlike MLA). Register them as
-        # persistent buffers so ``dump_model``/``restore_model`` round-trip them.
-        self._persist_absorbed_weights()
+
+        if self.vllm_config.snapshot_config is not None:
+            self._persist_absorbed_weights()
 
         if self.has_indexer and self.enable_sparse_li_c8 and AscendSFAImpl.q_hadamard is None:
             AscendSFAImpl.q_hadamard = torch.tensor(scipy.linalg.hadamard(128), dtype=torch.bfloat16, device="npu") / (
@@ -781,17 +772,6 @@ class AscendSFAImpl(MLAAttentionImpl):
         ("W_UK_T", "sfa_w_uk_t"),
     )
 
-    @staticmethod
-    def _set_persistent_buffer(module: torch.nn.Module, name: str, tensor: torch.Tensor) -> torch.Tensor:
-        # (Re)bind ``name`` on ``module`` as a *persistent* buffer so it is part
-        # of ``module.state_dict()`` and therefore saved/restored by the
-        # snapshot dump/restore path. Mirrors AscendMLAImpl._set_persistent_buffer.
-        if name in module._buffers:
-            module._buffers[name] = tensor
-        else:
-            module.register_buffer(name, tensor, persistent=True)
-        return module._buffers[name]
-
     def _persist_absorbed_weights(self) -> None:
         host = self.q_proj
         if host is None:
@@ -805,7 +785,7 @@ class AscendSFAImpl(MLAAttentionImpl):
                 host._buffers[buf_name].copy_(tensor)
                 setattr(self, attr_name, host._buffers[buf_name])
             else:
-                setattr(self, attr_name, self._set_persistent_buffer(host, buf_name, tensor))
+                setattr(self, attr_name, set_persistent_tensor(host, buf_name, tensor))
 
     def _rebind_absorbed_weight_buffers(self) -> bool:
         host = self.q_proj
@@ -817,17 +797,14 @@ class AscendSFAImpl(MLAAttentionImpl):
             setattr(self, attr_name, host._buffers[buf_name])
         return True
 
-    def _mlapo_should_persist_derived(self) -> bool:
-        # The transformed MLAPO tensors below are derived from the
-        # ``fused_qkv_a_proj`` / ``q_proj`` weight, deq_scale and quant_bias.
-        # KV consumers release those sources after cold-start derivation, so
-        # persist the derived tensors in ``state_dict`` for snapshot restore.
-        # Other roles retain the sources and can re-derive without duplicating
-        # them in the snapshot.
+    def _should_release_mlapo_sources(self) -> bool:
         return (
             self.is_kv_consumer
             and self.vllm_config.scheduler_config.max_num_batched_tokens <= MLAPO_MAX_SUPPORTED_TOKENS
         )
+
+    def _should_persist_mlapo_derived(self) -> bool:
+        return self.vllm_config.snapshot_config is not None and self._should_release_mlapo_sources()
 
     # (host attribute name, implementation attribute name, buffer name)
     _MLAPO_PERSISTED_BUFFERS = (
@@ -866,15 +843,8 @@ class AscendSFAImpl(MLAAttentionImpl):
         if self.topk_indices_buffer is not None:
             self.topk_indices_buffer.fill_(-1)
 
-    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
-        """[snapshot] Rebind/rebuild SFA non-persistent decode-path weights.
-
-        SFA always disposes ``kv_b_proj`` after building ``W_UV`` / ``W_UK_T``,
-        so those tensors are restored from persistent buffers rather than
-        re-derived. KV-consumer MLAPO tensors are also restored from persistent
-        buffers; cheap state is rebuilt, while roles that retain their source
-        parameters re-derive normally.
-        """
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+        """Rebind or rebuild decode weights derived outside ``state_dict``."""
         if not self._rebind_absorbed_weight_buffers():
             raise RuntimeError(
                 f"SFA layer {self.layer_name}: absorbed weight buffers are missing after restore"
@@ -889,7 +859,7 @@ class AscendSFAImpl(MLAAttentionImpl):
                     self._process_weights_for_fused_mlapo_a5(act_dtype)
                 else:
                     self._process_weights_for_fused_mlapo_a5_float(act_dtype)
-            elif self._mlapo_should_persist_derived():
+            elif self._should_persist_mlapo_derived():
                 self._rebind_persistent_mlapo_buffers()
                 self._derive_mlapo_rebuildable(act_dtype)
             else:
@@ -899,8 +869,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         # Non-mlapo path may have NZ-transformed W_UK_T; buffer already holds the
         # post-transform value from cold start, so nothing else to rebuild here.
 
-    def get_snapshot_tensor_sanity(self) -> dict[str, torch.Tensor]:
-        """Return SFA-derived tensors that must be non-zero after restore."""
+    def get_snapshot_derived_tensors(self) -> dict[str, torch.Tensor]:
         attrs = (
             # Absorbed weights restored from persistent buffers.
             "W_UV",
@@ -931,11 +900,7 @@ class AscendSFAImpl(MLAAttentionImpl):
 
     @classmethod
     def reload_hadamard_after_restore(cls, device) -> bool:
-        """[snapshot] Rebuild class-level SFA C8 indexer hadamards (zeroed by NPU restore).
-
-        The class attributes are outside ``state_dict`` and must be recreated
-        even though their Python objects remain non-None after restore.
-        """
+        """Rebuild class-level SFA C8 indexer tensors after restore."""
         if cls.q_hadamard is None and cls.k_hadamard is None:
             return False
         cls.q_hadamard = torch.tensor(scipy.linalg.hadamard(128), dtype=torch.bfloat16, device=device) / (128**0.5)
@@ -1105,20 +1070,18 @@ class AscendSFAImpl(MLAAttentionImpl):
             "qb_deq_scl": qb_deq_scl,
             "qb_qt_bias": qb_qt_bias,
         }
-        persist = self._mlapo_should_persist_derived()
+        persist = self._should_persist_mlapo_derived()
         if persist:
             for host_name, attr_name, buf_name in self._MLAPO_PERSISTED_BUFFERS:
                 host = getattr(self, host_name)
-                setattr(self, attr_name, self._set_persistent_buffer(host, buf_name, derived[attr_name]))
+                setattr(self, attr_name, set_persistent_tensor(host, buf_name, derived[attr_name]))
         else:
             for _, attr_name, _ in self._MLAPO_PERSISTED_BUFFERS:
                 setattr(self, attr_name, derived[attr_name])
 
         self._derive_mlapo_rebuildable(act_dtype)
 
-        if persist:
-            # Preserve the baseline KV-consumer memory optimization. The
-            # transformed tensors above are persistent snapshot buffers.
+        if self._should_release_mlapo_sources():
             self.fused_qkv_a_proj.weight = None
             self.fused_qkv_a_proj.deq_scale = None
             self.fused_qkv_a_proj.quant_bias = None

@@ -527,7 +527,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
 
         [snapshot] This is a plain class attribute holding a *device* tensor, not
         an ``nn.Module`` buffer, so it is neither serialized by ``dump_model`` nor
-        rebuilt by the duck-typed ``restore_snapshot_tensor_state`` scan.
+        rebuilt by the duck-typed ``restore_snapshot_derived_state`` scan.
         Its backing device memory is invalidated (observed as all-zero) by
         suspend/resume; a zero hadamard makes ``F.linear(x, 0) == 0``, zeroing the
         indexer q/k and collapsing ``query_dequant_scale`` / ``key_dequant_scale``
@@ -561,10 +561,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
 
     @classmethod
     def reload_hadamard_after_restore(cls, hf_config, device) -> bool:
-        """[snapshot] Unconditionally rebuild the (possibly stale/zeroed) class
-        level ``hadamard`` after a snapshot restore. Recomputes in place because
-        the metadata builder is not re-instantiated on resume, so the ``is None``
-        guard in ``__init__`` would otherwise never re-run."""
+        """Rebuild the class-level Hadamard tensor after restore."""
         return cls.build_hadamard(hf_config, device)
 
     @classmethod

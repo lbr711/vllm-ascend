@@ -47,10 +47,11 @@ from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.memcache_comm_fence import record_attention_compute_start
 from vllm_ascend.ops.rotary_embedding import get_cos_and_sin_mla, get_identity_cos_and_sin_mla
-from vllm_ascend.quantization.methods.kv_c8 import restore_fa_quant_tensor_state
+from vllm_ascend.quantization.methods.kv_c8 import process_fa_quant_tensor_state
 from vllm_ascend.quantization.methods.w8a8_mxfp8 import AscendW8A8MXFP8DynamicLinearMethod
 from vllm_ascend.quantization.methods.w8a8_static import AscendW8A8LinearMethod
 from vllm_ascend.quantization.utils import enable_fa_quant
+from vllm_ascend.snapshot.tensor_state import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     AscendDeviceType,
@@ -1210,28 +1211,15 @@ class AscendMLAImpl(MLAAttentionImpl):
                 self._process_weights_for_fused_mlapo(act_dtype)
         elif self.fa_quant_layer:
             layer = self.vllm_config.compilation_config.static_forward_context[self.layer_name]
-            restore_fa_quant_tensor_state(layer, self.kv_lora_rank)
+            process_fa_quant_tensor_state(layer, self.kv_lora_rank)
             self._process_weights_for_fused_fa_quant()
         else:
             # if mlapo, W_UK_T can't trans nz
             self.W_UK_T = maybe_trans_nz(self.W_UK_T)
 
 
-    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
-        """[snapshot] Re-derive non-persistent decode-path weights after a
-        ``state_dict`` restore.
-
-        ``W_UV`` / ``W_UK_T`` (and the mlapo / fa-quant derived tensors) are
-        computed from persistent parameters inside
-        :meth:`process_weights_after_loading` and are **not** registered as
-        parameters or buffers, so they are absent from the checkpoint produced
-        by ``dump_model`` (which only serializes ``state_dict``). After
-        suspend/resume the device memory backing these attributes is stale,
-        which collapses the MLA *decode* output to zero (prefill keeps working
-        because it uses ``kv_b_proj`` directly). Re-running the derivation from
-        the freshly restored ``kv_b_proj.weight`` repairs them. The ACL graph
-        is re-captured after restore, so reallocating these tensors is safe.
-        """
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+        """Rebuild decode weights that are derived outside ``state_dict``."""
         if getattr(self, "kv_b_proj", None) is None:
             return
         if not isinstance(self.kv_b_proj.quant_method, UnquantizedLinearMethod):
@@ -1252,13 +1240,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         if self.enable_mlapo:
             if get_ascend_device_type() == AscendDeviceType.A5:
                 self._process_weights_for_fused_mlapo_a5(act_dtype)
-            elif self._mlapo_should_persist_derived():
-                # The source weights (fused_qkv_a_proj / q_proj weight, deq_scale,
-                # quant_bias) were freed at cold start, so the transformed MLAPO
-                # tensors cannot be re-derived here. They were persisted as
-                # buffers and already refreshed in-place by ``restore_model``;
-                # just re-point the impl attributes at them and recompute only
-                # the cheap, always-rebuildable tensors.
+            elif self._should_persist_mlapo_derived():
                 self._rebind_persistent_mlapo_buffers()
                 self._derive_mlapo_rebuildable(act_dtype)
             else:
@@ -1268,8 +1250,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         else:
             self.W_UK_T = maybe_trans_nz(self.W_UK_T)
 
-    def get_snapshot_tensor_sanity(self) -> dict[str, torch.Tensor]:
-        """Return derived tensors that must be non-zero after restore."""
+    def get_snapshot_derived_tensors(self) -> dict[str, torch.Tensor]:
         attrs = (
             # Common MLA absorbed weights.
             "W_UV",
@@ -1325,23 +1306,15 @@ class AscendMLAImpl(MLAAttentionImpl):
             self.quant_kscale = layer.quant_kscale
             self.fak_descale_float = layer.fak_descale_float
 
-    def _mlapo_should_persist_derived(self) -> bool:
-        # The transformed MLAPO tensors below (wd_qkv / deq_scale_qkv /
-        # quant_bias_qkv / wu_q / qb_deq_scl / qb_qt_bias) are derived from the
-        # ``fused_qkv_a_proj`` / ``q_proj`` weight, deq_scale and quant_bias.
-        # On KV consumers those *source* params are freed right after this
-        # derivation to save memory (see the ``persist`` branch at the end of
-        # ``_process_weights_for_fused_mlapo``). Once freed they can never be
-        # re-derived after a snapshot restore, so on exactly those instances the
-        # derived tensors must be persisted as buffers (serialized in
-        # ``state_dict`` and restored by ``restore_model``) instead of being
-        # recomputed. Anywhere else the sources survive, so recomputation is
-        # fine and we avoid bloating the snapshot with duplicate weights.
+    def _should_release_mlapo_sources(self) -> bool:
         return (
             self.vllm_config.kv_transfer_config is not None
             and self.vllm_config.kv_transfer_config.is_kv_consumer
             and self.vllm_config.scheduler_config.max_num_batched_tokens <= MLAPO_MAX_SUPPORTED_TOKENS
         )
+
+    def _should_persist_mlapo_derived(self) -> bool:
+        return self.vllm_config.snapshot_config is not None and self._should_release_mlapo_sources()
 
     # Buffer names under which the source-dependent MLAPO tensors are persisted.
     # (host attribute name, impl attribute name, buffer name)
@@ -1354,30 +1327,12 @@ class AscendMLAImpl(MLAAttentionImpl):
         ("q_proj", "qb_qt_bias", "mlapo_qb_qt_bias"),
     )
 
-    @staticmethod
-    def _set_persistent_buffer(module: torch.nn.Module, name: str, tensor: torch.Tensor) -> torch.Tensor:
-        # (Re)bind ``name`` on ``module`` as a *persistent* buffer so it is part
-        # of ``module.state_dict()`` and therefore saved/restored by the
-        # snapshot dump/restore path.
-        if name in module._buffers:
-            module._buffers[name] = tensor
-        else:
-            module.register_buffer(name, tensor, persistent=True)
-        return module._buffers[name]
-
     def _rebind_persistent_mlapo_buffers(self) -> None:
-        # After a snapshot restore the persisted buffers hold the correct values
-        # (refreshed in-place by ``restore_model``). Point the impl attributes
-        # that the fused kernel reads at those restored buffers.
         for host_name, attr_name, buf_name in self._MLAPO_PERSISTED_BUFFERS:
             host = getattr(self, host_name)
             setattr(self, attr_name, host._buffers[buf_name])
 
     def _derive_mlapo_rebuildable(self, act_dtype: torch.dtype) -> None:
-        # MLAPO tensors that can always be rebuilt from parameters that survive
-        # the consumer weight-free step above (layernorm gammas, per-tensor
-        # input quant scales/offsets, constants). These are cheap and are NOT
-        # persisted in the snapshot.
         device = self.q_proj.input_scale.device
         self.gamma1 = self.q_a_layernorm.weight.data  # type: ignore[union-attr]
         self.beta1 = torch.zeros_like(self.gamma1) if (_bias := self.q_a_layernorm.bias) is None else _bias.data  # type: ignore[union-attr]
@@ -1434,7 +1389,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         qb_qt_bias = trans_rope_weight(qb_qt_bias, self.qk_rope_head_dim)
         qb_qt_bias = qb_qt_bias.reshape(self.num_heads * (self.qk_nope_head_dim + self.qk_rope_head_dim))
 
-        persist = self._mlapo_should_persist_derived()
+        persist = self._should_persist_mlapo_derived()
         derived = {
             "wd_qkv": wd_qkv,
             "deq_scale_qkv": deq_scale_qkv,
@@ -1444,22 +1399,16 @@ class AscendMLAImpl(MLAAttentionImpl):
             "qb_qt_bias": qb_qt_bias,
         }
         if persist:
-            # Persist as buffers so they land in the snapshot and are restored
-            # verbatim, since the sources they derive from are freed below.
             for host_name, attr_name, buf_name in self._MLAPO_PERSISTED_BUFFERS:
                 host = getattr(self, host_name)
-                setattr(self, attr_name, self._set_persistent_buffer(host, buf_name, derived[attr_name]))
+                setattr(self, attr_name, set_persistent_tensor(host, buf_name, derived[attr_name]))
         else:
             for _, attr_name, _ in self._MLAPO_PERSISTED_BUFFERS:
                 setattr(self, attr_name, derived[attr_name])
 
         self._derive_mlapo_rebuildable(act_dtype)
 
-        # On KV consumers (decode-only) MLAPO uses the transformed weights built above;
-        # the original fused_qkv_a_proj/q_proj weights and quant params are no longer
-        # referenced, so drop them to save memory. The transformed tensors were
-        # persisted as buffers above so they survive suspend/resume.
-        if persist:
+        if self._should_release_mlapo_sources():
             self.fused_qkv_a_proj.weight = None  # type: ignore[union-attr]
             self.fused_qkv_a_proj.deq_scale = None  # type: ignore[union-attr]
             self.fused_qkv_a_proj.quant_bias = None  # type: ignore[union-attr]
@@ -1772,25 +1721,6 @@ class AscendMLAImpl(MLAAttentionImpl):
         c_kv_scale = None
         if get_ascend_device_type() == AscendDeviceType.A5 and self.fa_quant_layer:
             c_kv_scale = self.fak_descale_reciprocal
-        # [snapshot] Sync-free safety net for the MTP drafter KV-cache scatter.
-        # After a snapshot restore the block-table device rows that are never
-        # re-copied from CPU (row >= num_reqs) hold restored garbage instead of
-        # the cold-start zeros; the drafter's look-ahead slot computation can
-        # read them and emit an out-of-range slot, which makes
-        # ``npu_kv_rmsnorm_rope_cache`` crash with an MTE "DDR address out of
-        # range". Map any slot outside [0, cap) to the pad id so the kernel
-        # skips it. Scoped to the draft path only: the main model never reads
-        # those rows (its decode reads only committed rows at real positions),
-        # so it pays ZERO overhead. ``cap`` is a Python int from the cache
-        # shape, so this is a pure device op with NO host sync.
-        if _EXTRA_CTX.is_draft_model:
-            _k0 = kv_cache[0]
-            _cap = (_k0.shape[0] * _k0.shape[1]) if _k0.dim() >= 2 else _k0.numel()
-            slots = torch.where(
-                (slots >= 0) & (slots < _cap),
-                slots,
-                torch.full_like(slots, PAD_SLOT_ID),
-            )
         k_pe, k_nope, _, _ = torch_npu.npu_kv_rmsnorm_rope_cache(
             kv_no_split,
             self.kv_a_layernorm.weight,  # type: ignore[union-attr]
