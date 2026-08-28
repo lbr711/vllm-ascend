@@ -862,7 +862,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         self.ctkv_scale = torch.tensor([1], dtype=act_dtype, device=device)
         self.q_nope_scale = torch.tensor([1], dtype=act_dtype, device=device)
 
-    def reload_derived_weights_after_restore(self, act_dtype: torch.dtype) -> None:
+    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
         """[snapshot] Rebind/rebuild SFA non-persistent decode-path weights.
 
         SFA always disposes ``kv_b_proj`` after building ``W_UV`` / ``W_UK_T``,
@@ -895,7 +895,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         # Non-mlapo path may have NZ-transformed W_UK_T; buffer already holds the
         # post-transform value from cold start, so nothing else to rebuild here.
 
-    def get_derived_weight_sanity_tensors(self) -> dict[str, torch.Tensor]:
+    def get_snapshot_tensor_sanity(self) -> dict[str, torch.Tensor]:
         """Return SFA-derived tensors that must be non-zero after restore."""
         attrs = (
             # Absorbed weights restored from persistent buffers.

@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import torch
 
+from vllm_ascend.snapshot.tensor_state import restore_derived_tensor_state
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 
@@ -16,10 +18,10 @@ class _BackendSpecificReloadTarget:
     def __init__(self) -> None:
         self.reloaded = False
 
-    def reload_derived_weights_after_restore(self, act_dtype: torch.dtype) -> None:
+    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
         self.reloaded = True
 
-    def get_derived_weight_sanity_tensors(self) -> dict[str, torch.Tensor]:
+    def get_snapshot_tensor_sanity(self) -> dict[str, torch.Tensor]:
         return {"backend_specific_weight": torch.zeros(1)}
 
 
@@ -27,6 +29,11 @@ class _ImplHolder(torch.nn.Module):
     def __init__(self, impl: object) -> None:
         super().__init__()
         self.impl = impl
+
+
+class _FailingReloadTarget:
+    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
+        raise RuntimeError("restore failed")
 
 
 def test_reset_resume_sfa_runtime_buffers_clears_shared_state():
@@ -65,15 +72,19 @@ def test_reset_resume_sfa_runtime_buffers_clears_shared_state():
 
 def test_reload_derived_weights_uses_backend_specific_sanity_tensors():
     target = _BackendSpecificReloadTarget()
-    runner = NPUModelRunner.__new__(NPUModelRunner)
-    runner.model_config = SimpleNamespace(dtype=torch.bfloat16)
 
-    with patch("vllm_ascend.worker.model_runner_v1.logger") as logger:
-        runner._reload_non_persistent_derived_weights(
-            model=_ImplHolder(target),
-            label="model",
-        )
+    with patch("vllm_ascend.snapshot.tensor_state.logger") as logger:
+        restore_derived_tensor_state(_ImplHolder(target), torch.bfloat16, "model")
 
     assert target.reloaded
     logger.error.assert_called_once()
     assert "backend_specific_weight" in str(logger.error.call_args)
+
+
+def test_reload_derived_weights_propagates_failure():
+    with pytest.raises(RuntimeError, match="restore failed"):
+        restore_derived_tensor_state(
+            _ImplHolder(_FailingReloadTarget()),
+            torch.bfloat16,
+            "model",
+        )

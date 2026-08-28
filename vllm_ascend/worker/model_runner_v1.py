@@ -154,6 +154,10 @@ from vllm_ascend.patch.worker.patch_draft_quarot import patch_load_weights
 from vllm_ascend.quantization.utils import enable_fa_quant
 from vllm_ascend.sample.sampler import AscendSampler
 from vllm_ascend.snapshot.model_state import dump_state_dict, restore_state_dict
+from vllm_ascend.snapshot.tensor_state import (
+    restore_derived_tensor_state,
+    restore_global_tensor_state,
+)
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
@@ -3637,7 +3641,7 @@ class NPUModelRunner(GPUModelRunner):
         # its source ``kv_b_proj`` is disposed. Remaining cheap derived tensors
         # are rebuilt from restored sources. Graph mode recaptures after this
         # step; enforce-eager has no captured tensor addresses to preserve.
-        self._reload_non_persistent_derived_weights(model=model, label=label)
+        restore_derived_tensor_state(model, self.model_config.dtype, label)
 
     def restore_model(self, path="/mnt") -> None:
         tp_size = self.vllm_config.parallel_config.tensor_parallel_size
@@ -3666,7 +3670,11 @@ class NPUModelRunner(GPUModelRunner):
         # Rebuild non-persistent state that lives OUTSIDE any nn.Module (class /
         # module-level device tensors), which the per-model reload above cannot
         # reach via ``named_modules()``.
-        self._reload_global_non_persistent_state()
+        restore_global_tensor_state(
+            self.get_model(),
+            self.model_config.hf_config,
+            self.device,
+        )
         self._clear_resume_spec_decode_carryover()
         self.restore_drafter_runtime_buffers()
         # Clear per-builder runtime metadata cache (MLA/DSA/etc.) so the first
@@ -3903,137 +3911,6 @@ class NPUModelRunner(GPUModelRunner):
             zeroed,
             "" if not failed else f", failed={failed[: min(8, len(failed))]}",
         )
-
-    def _reload_global_non_persistent_state(self) -> None:
-        """[snapshot] Rebuild process/class-level device tensors that are not part
-        of any ``nn.Module`` state and are therefore neither serialized nor
-        repaired by the per-model reload path. Currently the DSA/SFA lightning-indexer
-        ``hadamard`` rotation matrices and MLA RoPE global cos/sin aliases:
-        after suspend/resume their device memory is zeroed / stale. Each rebuild
-        is best-effort so an unused backend never breaks restore."""
-        hf_config = self.model_config.hf_config
-        device = self.device
-        rebuilt: list[str] = []
-        try:
-            from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
-            if AscendDSAMetadataBuilder.reload_hadamard_after_restore(hf_config, device):
-                rebuilt.append("dsa.hadamard")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[restore model] DSA hadamard rebuild skipped: %s", exc)
-        try:
-            from vllm_ascend.attention.context_parallel.dsa_cp import AscendDSACPMetadataBuilder
-            reload_cp = getattr(AscendDSACPMetadataBuilder, "reload_hadamard_after_restore", None)
-            if callable(reload_cp) and reload_cp(hf_config, device):
-                rebuilt.append("dsa_cp.hadamard")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[restore model] DSA-CP hadamard rebuild skipped: %s", exc)
-        try:
-            from vllm_ascend.attention.sfa_v1 import AscendSFAImpl
-            if AscendSFAImpl.reload_hadamard_after_restore(device):
-                rebuilt.append("sfa.hadamard")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[restore model] SFA hadamard rebuild skipped: %s", exc)
-        try:
-            from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
-            if reload_cos_and_sin_after_restore(self.get_model()):
-                rebuilt.append("mla_rope.cos_sin")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[restore model] MLA RoPE global rebind skipped: %s", exc)
-        logger.info(
-            "[restore model] rebuilt global non-persistent state: %s",
-            rebuilt if rebuilt else "none",
-        )
-
-    def _reload_non_persistent_derived_weights(self, model=None, label: str = "model") -> None:
-        if model is None:
-            model = self.get_model()
-        act_dtype = self.model_config.dtype
-        reloaded = 0
-        failed: list[str] = []
-        # Minimal regression guard: the resume bug manifested as MLA/SFA decode
-        # weights and scales collapsing to zero. After restore/recompute they
-        # must be non-zero; track the worst norm and any degenerate tensors.
-        min_norm = float("inf")
-        min_norm_where = ""
-        zero_norm_modules: list[str] = []
-        # NOTE: MLA implementations are stored on attention modules as
-        # ``module.impl`` (plain Python object, not nn.Module), so scanning
-        # ``named_modules()`` alone misses them. Include both module itself and
-        # its impl target to ensure reload is actually applied.
-        reload_targets: list[tuple[str, object]] = []
-        for name, module in model.named_modules():
-            reload_targets.append((name, module))
-            impl = getattr(module, "impl", None)
-            if impl is not None:
-                reload_targets.append((f"{name}.impl", impl))
-
-        seen_ids: set[int] = set()
-        for name, target in reload_targets:
-            target_id = id(target)
-            if target_id in seen_ids:
-                continue
-            seen_ids.add(target_id)
-
-            reload_fn = getattr(target, "reload_derived_weights_after_restore", None)
-            if not callable(reload_fn):
-                continue
-            try:
-                reload_fn(act_dtype)
-                reloaded += 1
-            except Exception as exc:  # noqa: BLE001
-                failed.append(f"{name}:{type(exc).__name__}:{exc}")
-                continue
-            get_sanity_tensors = getattr(
-                target,
-                "get_derived_weight_sanity_tensors",
-                None,
-            )
-            if not callable(get_sanity_tensors):
-                continue
-            try:
-                sanity_tensors = get_sanity_tensors()
-            except Exception as exc:  # noqa: BLE001
-                failed.append(
-                    "%s.get_derived_weight_sanity_tensors:%s:%s"
-                    % (name, type(exc).__name__, exc)
-                )
-                continue
-            for attr, tensor in sanity_tensors.items():
-                try:
-                    norm = float(tensor.detach().float().norm().item())
-                except Exception:  # noqa: BLE001
-                    continue
-                if norm < min_norm:
-                    min_norm = norm
-                    min_norm_where = f"{name}.{attr}"
-                if norm == 0.0:
-                    zero_norm_modules.append(f"{name}.{attr}")
-        logger.info(
-            "[restore model] [%s] reloaded non-persistent derived weights for %d modules%s",
-            label,
-            reloaded,
-            "" if not failed else f", failed={failed[: min(8, len(failed))]}",
-        )
-        if reloaded == 0:
-            logger.warning(
-                "[restore model] [%s] no non-persistent derived-weight reload targets found; "
-                "attention decode may still use stale derived weights",
-                label,
-            )
-        if reloaded and min_norm != float("inf"):
-            if zero_norm_modules:
-                logger.error(
-                    "[restore model] REGRESSION: %d derived weight tensors are still "
-                    "zero after restore, attention decode will be broken. preview=%s",
-                    len(zero_norm_modules),
-                    zero_norm_modules[: min(8, len(zero_norm_modules))],
-                )
-            else:
-                logger.info(
-                    "[restore model] derived-weight sanity ok: min_norm=%.6f at %s",
-                    min_norm,
-                    min_norm_where,
-                )
 
     def load_model(self) -> None:
         load_model_start_time = time.perf_counter()

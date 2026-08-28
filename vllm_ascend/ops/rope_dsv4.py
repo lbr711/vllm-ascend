@@ -299,7 +299,7 @@ class ComplexExpRotaryEmbedding(nn.Module):
                     ]
                     _ROPE_STATE.spec_runtime_buffer[config_key][grp] = (buf_cos, buf_sin)
 
-    def reload_derived_weights_after_restore(self, act_dtype: torch.dtype) -> None:
+    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
         """[snapshot] Rebuild the non-persistent rope cos/sin caches after a
         ``state_dict`` restore.
 

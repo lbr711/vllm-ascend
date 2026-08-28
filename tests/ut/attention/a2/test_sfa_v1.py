@@ -354,7 +354,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.layer_name = "model.layers.0.self_attn"
 
         with self.assertRaisesRegex(RuntimeError, "absorbed weight buffers are missing"):
-            impl.reload_derived_weights_after_restore(torch.bfloat16)
+            impl.restore_snapshot_tensor_state(torch.bfloat16)
 
     def test_metadata_builder_reset_clears_reusable_length_buffers(self):
         builder = AscendSFAMetadataBuilder.__new__(AscendSFAMetadataBuilder)

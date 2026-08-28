@@ -1214,7 +1214,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             self.W_UK_T = maybe_trans_nz(self.W_UK_T)
 
 
-    def reload_derived_weights_after_restore(self, act_dtype: torch.dtype) -> None:
+    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
         """[snapshot] Re-derive non-persistent decode-path weights after a
         ``state_dict`` restore.
 
@@ -1265,7 +1265,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         else:
             self.W_UK_T = maybe_trans_nz(self.W_UK_T)
 
-    def get_derived_weight_sanity_tensors(self) -> dict[str, torch.Tensor]:
+    def get_snapshot_tensor_sanity(self) -> dict[str, torch.Tensor]:
         """Return derived tensors that must be non-zero after restore."""
         attrs = (
             # Common MLA absorbed weights.
