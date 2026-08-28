@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Iterable, Iterator
-from typing import Protocol
-
 import torch
 import torch.nn as nn
 from vllm.logger import logger
-
-
-class SnapshotTensorStateOwner(Protocol):
-    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None: ...
-
-    def reset_snapshot_runtime_state(self) -> None: ...
 
 
 def persist_tensor_attributes(module: nn.Module, names: Iterable[str]) -> None:
@@ -25,6 +17,14 @@ def persist_tensor_lists(module: nn.Module, names: Iterable[str]) -> None:
     for name in names:
         for index, tensor in enumerate(getattr(module, name)):
             module.register_buffer(f"_snapshot_{name}_{index}", tensor)
+
+
+def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) -> torch.Tensor:
+    if name in module._buffers:
+        module._buffers[name] = tensor
+    else:
+        module.register_buffer(name, tensor)
+    return module._buffers[name]
 
 
 def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
@@ -68,13 +68,13 @@ def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label
     zero_norm_tensors: list[str] = []
 
     for name, owner in _iter_derived_state_owners(model):
-        restore = getattr(owner, "restore_snapshot_tensor_state", None)
+        restore = getattr(owner, "restore_snapshot_derived_state", None)
         if not callable(restore):
             continue
         restore(act_dtype)
         restored += 1
 
-        get_sanity_tensors = getattr(owner, "get_snapshot_tensor_sanity", None)
+        get_sanity_tensors = getattr(owner, "get_snapshot_derived_tensors", None)
         if not callable(get_sanity_tensors):
             continue
         for tensor_name, tensor in get_sanity_tensors().items():

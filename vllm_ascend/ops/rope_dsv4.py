@@ -299,18 +299,8 @@ class ComplexExpRotaryEmbedding(nn.Module):
                     ]
                     _ROPE_STATE.spec_runtime_buffer[config_key][grp] = (buf_cos, buf_sin)
 
-    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
-        """[snapshot] Rebuild the non-persistent rope cos/sin caches after a
-        ``state_dict`` restore.
-
-        The cos/sin tables are stored in the module-level ``_ROPE_STATE`` global
-        rather than as ``nn.Module`` buffers, so ``dump_model`` never serializes
-        them and ``restore_model`` never copies them back. After suspend/resume
-        the device memory backing them is stale (observed as all-zero cos/sin),
-        which zeroes rotary position encoding and corrupts attention for every
-        layer. Recomputing them from the static rope parameters repairs the whole
-        decode/prefill path. The ACL graph is re-captured after restore, so
-        reallocating is safe."""
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+        """Rebuild the module-level RoPE cache after restore."""
         self._build_cos_sin_cache(force=True)
 
     @staticmethod

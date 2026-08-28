@@ -116,7 +116,8 @@ def _reset_attention_builder_runtime_states(runner) -> None:
         for attn_group in kv_groups
         for builder in attn_group.metadata_builders
     ]
-    reset = reset_runtime_tensor_state(builders)
+    owners = builders + [builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")]
+    reset = reset_runtime_tensor_state(owners)
     logger.info(
         "[restore model] attention builder runtime reset: total=%d reset=%d",
         len(builders),

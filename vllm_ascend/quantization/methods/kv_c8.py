@@ -27,7 +27,7 @@ def _fa_quant_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor):
         param.data.copy_(loaded_weight)
 
 
-def restore_fa_quant_tensor_state(layer: torch.nn.Module, kv_lora_rank: int) -> None:
+def process_fa_quant_tensor_state(layer: torch.nn.Module, kv_lora_rank: int) -> None:
     fa_k_scale = torch.squeeze(layer.fa_k.scale).unsqueeze(0)
     layer.fak_descale_float = torch.nn.Parameter(fa_k_scale.to(torch.float), requires_grad=False)
     layer.fak_descale = torch.nn.Parameter(fa_k_scale, requires_grad=False)
@@ -72,7 +72,7 @@ class AscendFAQuantAttentionMethod:
             weight_param.weight_loader = _fa_quant_weight_loader
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        restore_fa_quant_tensor_state(layer, self.kv_lora_rank)
+        process_fa_quant_tensor_state(layer, self.kv_lora_rank)
 
 
 @register_scheme("INT8_DYNAMIC", "attention")

@@ -262,13 +262,7 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.compressor_metadata_buffers: CompressorMetadataOutput | None = None
 
     def reset_snapshot_runtime_state(self) -> None:
-        """[snapshot] Restore cold-start DSA-CP metadata state after resume.
-
-        DSA-CP keeps per-iteration metadata and reusable device tensors on the
-        builder rather than in ``state_dict``. Clear both the cached references
-        and the complete tensor allocations so graph warmup after snapshot
-        restore cannot consume snapshot-time lengths or sparse metadata.
-        """
+        """Clear reusable DSA-CP request metadata after restore."""
         self.num_decodes = 0
         self.num_prefills = 0
         self.num_decode_tokens = 0
@@ -345,8 +339,7 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
 
     @classmethod
     def reload_hadamard_after_restore(cls, hf_config, device) -> bool:
-        """[snapshot] Rebuild the stale/zeroed class-level ``hadamard`` in place
-        after a restore (the builder is not re-instantiated on resume)."""
+        """Rebuild the class-level Hadamard tensor after restore."""
         return cls.build_hadamard(hf_config, device)
 
     @classmethod
@@ -1399,6 +1392,9 @@ class AscendDSACPImpl(DSAAttentionImpl):
         self.tp_size = tp_group.world_size
         self.tp_rank = tp_group.rank_in_group
 
+    def reset_snapshot_runtime_state(self) -> None:
+        self._refresh_tp_group_runtime(force=True)
+
     def process_weights_after_loading(self, act_dtype: torch.dtype):
         if self.attn_sink.numel() != self.num_heads:
             raise RuntimeError(
@@ -1541,10 +1537,6 @@ class AscendDSACPImpl(DSAAttentionImpl):
         need_gather_q_kv: bool = False,
         output: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # Snapshot resume rebuilds process groups, so cached coordinator objects
-        # may become stale (their device_group can be destroyed/deleted). Refresh
-        # TP group handle before collective communication.
-        self._refresh_tp_group_runtime()
         assert output is not None, "Output tensor must be provided."
         if attn_metadata is None:
             # Profiling run.
@@ -1893,10 +1885,7 @@ class AscendDSACPImpl(DSAAttentionImpl):
             .view(-1, self.n_local_heads, self.head_dim)
         )
         recv = torch.empty_like(send)
-        tp_group = get_tp_group()
-        # Keep runtime copy in sync for future calls and logs.
-        self._refresh_tp_group_runtime(force=True)
-        dist.all_to_all_single(recv, send, group=tp_group.device_group)
+        dist.all_to_all_single(recv, send, group=self.tp_group.device_group)
         return recv
 
     def _update_indexer_cache(

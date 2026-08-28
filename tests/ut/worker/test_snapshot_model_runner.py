@@ -26,10 +26,10 @@ class _BackendSpecificReloadTarget:
     def __init__(self) -> None:
         self.reloaded = False
 
-    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
         self.reloaded = True
 
-    def get_snapshot_tensor_sanity(self) -> dict[str, torch.Tensor]:
+    def get_snapshot_derived_tensors(self) -> dict[str, torch.Tensor]:
         return {"backend_specific_weight": torch.zeros(1)}
 
 
@@ -40,7 +40,7 @@ class _ImplHolder(torch.nn.Module):
 
 
 class _FailingReloadTarget:
-    def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
         raise RuntimeError("restore failed")
 
 
