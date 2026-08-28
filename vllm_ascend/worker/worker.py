@@ -21,9 +21,7 @@ import copy
 import gc
 import logging
 import os
-import platform
 import time
-from ctypes import CDLL, c_int, c_void_p
 from types import NoneType
 from typing import Any
 
@@ -54,7 +52,6 @@ from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
 from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.mem_utils import MemorySnapshot, format_gib, memory_profiling
-from vllm.utils.network_utils import get_distributed_init_method
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
@@ -79,14 +76,10 @@ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.layerwise_cache_la
 from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_manager import (
     get_host_device_memory_usage_ratio,
 )
-from vllm_ascend.distributed.parallel_state import (
-    destroy_ascend_model_parallel,
-    init_ascend_model_parallel,
-)
+from vllm_ascend.distributed.parallel_state import init_ascend_model_parallel
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 from vllm_ascend.profiler.torch_npu_profiler import TorchNPUProfilerWrapper
-from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
-from vllm_ascend.snapshot.tensor_state import reset_runtime_tensor_state
+from vllm_ascend.snapshot.worker import resume_worker, suspend_worker, unlock_worker
 from vllm_ascend.utils import (
     AscendDeviceType,
     check_ascend_device_type,
@@ -763,67 +756,11 @@ class NPUWorker(WorkerBase):
     def sample_tokens(self, grammar_output: "GrammarOutput") -> ModelRunnerOutput | AsyncModelRunnerOutput:
         return self.model_runner.sample_tokens(grammar_output)
 
-    _acl_rt_lib: CDLL | None = None
-
-    @classmethod
-    def _get_acl_rt_lib(cls) -> CDLL:
-        if cls._acl_rt_lib is not None:
-            return cls._acl_rt_lib
-        try:
-            cls._acl_rt_lib = CDLL("libacl_rt.so")
-        except OSError:
-            ascend_home = os.environ.get("ASCEND_HOME_PATH", "/usr/local/Ascend/cann")
-            arch = "aarch64" if platform.machine() == "aarch64" else "x86_64"
-            lib_path = os.path.join(ascend_home, f"{arch}-linux", "lib64", "libacl_rt.so")
-            cls._acl_rt_lib = CDLL(lib_path)
-        return cls._acl_rt_lib
-
-    def _call_aclrt_snapshot_api(self, api_name: str) -> None:
-        npu_aclrt_lib = self._get_acl_rt_lib()
-        api = getattr(npu_aclrt_lib, api_name)
-        api.argtypes = [c_int, c_void_p]
-        api.restype = c_int
-        result = api(os.getpid(), None)
-        if result == 0:
-            logger.info("[snapshot] [worker] [rank:%s] %s success.", self.rank, api_name)
-        else:
-            logger.error("[snapshot] [worker] [rank:%s] %s failed %s.", self.rank, api_name, result)
-
-    def snapshot_process_lock(self) -> None:
-        self._call_aclrt_snapshot_api("aclrtSnapShotProcessLock")
-
-    def snapshot_process_backup(self) -> None:
-        self._call_aclrt_snapshot_api("aclrtSnapShotProcessBackup")
-
-    def snapshot_process_restore(self) -> None:
-        self._call_aclrt_snapshot_api("aclrtSnapShotProcessRestore")
-
-    def snapshot_process_unlock(self) -> None:
-        self._call_aclrt_snapshot_api("aclrtSnapShotProcessUnlock")
-
-    def _run_timed_snapshot_steps(self, steps) -> None:
-        for step_name, step_fn in steps:
-            logger.info("[snapshot] [worker] rank %s: start %s", self.rank, step_name)
-            t0 = time.perf_counter()
-            step_fn()
-            logger.info(
-                "[snapshot] [worker] rank %s: %s cost %.2fs",
-                self.rank,
-                step_name,
-                time.perf_counter() - t0,
-            )
-
     def suspend(self, model_save_path: str | None = None) -> None:
-        steps = (
-            ("dump_model", lambda: self.dump_model(model_save_path)),
-            ("gc.collect", lambda: gc.collect()),
-            ("snapshot_process_lock", lambda: self.snapshot_process_lock()),
-            ("snapshot_process_backup", lambda: self.snapshot_process_backup()),
-        )
-        self._run_timed_snapshot_steps(steps)
+        suspend_worker(self, model_save_path)
 
     def device_unlock(self) -> None:
-        self.snapshot_process_unlock()
+        unlock_worker(self)
 
     def resume(
         self,
@@ -832,124 +769,7 @@ class NPUWorker(WorkerBase):
         model_path: str | None = None,
         new_engine_id: str | None = None,
     ) -> None:
-        steps = (
-            ("snapshot_process_restore", lambda: self.snapshot_process_restore()),
-            ("snapshot_process_unlock", lambda: self.snapshot_process_unlock()),
-            (
-                "update_worker_info_after_resume",
-                lambda: self.update_worker_info_after_resume(local_ip, data_parallel_master_ip),
-            ),
-            (
-                "rebuild_parallel_group_after_resume",
-                lambda: self.rebuild_parallel_group_after_resume(),
-            ),
-            ("re_load_weights", lambda: self.re_load_weights(model_path)),
-            ("recapture_graph", lambda: self.recapture_graph()),
-            (
-                "rebuild_kv_transfer_engine_after_resume",
-                lambda: self.rebuild_kv_transfer_engine_after_resume(local_ip, new_engine_id),
-            ),
-        )
-        self._run_timed_snapshot_steps(steps)
-
-    def dump_model(self, model_save_path=None) -> None:
-        self.model_runner.dump_model(path=model_save_path)
-
-    def re_load_weights(self, model_path=None) -> None:
-        self.model_runner.restore_model(path=model_path)
-
-    def parallel_group_clean_up(self) -> None:
-        snapshot_enabled = getattr(self.vllm_config, "snapshot_config", None) is not None
-        with snapshot_hccl_teardown(snapshot_enabled):
-            destroy_ascend_model_parallel()
-            logger.info("[snapshot] [parallel] rank %s: destroy_ascend_model_parallel done", self.rank)
-            cleanup_dist_env_for_snapshot()
-            logger.info("[snapshot] [parallel] rank %s: cleanup_dist_env_for_snapshot done", self.rank)
-
-    def rebuild_parallel_group_after_resume(self) -> None:
-        """[snapshot] Tear down and re-init HCCL / TP / PP parallel groups after resume."""
-        import torch.distributed as dist
-
-        # DEBUG level triggers a known torchair bug, so keep INFO level.
-        dist.set_debug_level(dist.DebugLevel.INFO)
-
-        rebuild_time_start = time.time()
-        logger.info("[snapshot] [parallel] rank %s: destroying HCCL and model-parallel groups", self.rank)
-        self.parallel_group_clean_up()
-
-        logger.info("[snapshot] [parallel] rank %s: rebuilding HCCL and model-parallel groups", self.rank)
-
-        # DP=1, should explicitly reset the distributed_init_method
-        master_ip = self.vllm_config.parallel_config.data_parallel_master_ip
-        if not master_ip:
-            raise RuntimeError(f"Unable to resolve master IP for distributed init method: {init_method}")
-        resume_ports = self.vllm_config.parallel_config._snapshot_data_parallel_port_list
-        if not resume_ports:
-            raise RuntimeError("Snapshot world-group resume port is not configured")
-        resume_port = resume_ports[-1]
-        self.distributed_init_method = get_distributed_init_method(master_ip, resume_port)
-
-        with set_current_vllm_config(self.vllm_config):
-            self._init_worker_distributed_environment()
-
-            from vllm.distributed.parallel_state import get_dp_group, get_ep_group
-
-            from vllm_ascend.distributed.parallel_state import get_mc2_group
-            from vllm_ascend.ops.fused_moe.moe_comm_method import _MoECommMethods
-
-            snapshot_state_owners = []
-            for comm_method in _MoECommMethods.values():
-                moe_config = getattr(comm_method, "moe_config", None)
-                if moe_config is not None:
-                    moe_config.tp_group = get_tp_group()
-                    moe_config.dp_group = get_dp_group()
-                    if moe_config.ep_size > 1:
-                        moe_config.ep_group = get_ep_group()
-                        moe_config.mc2_group = get_mc2_group()
-
-                dispatcher = getattr(comm_method, "token_dispatcher", None)
-                snapshot_state_owners.extend((comm_method, dispatcher))
-                refresh_fn = getattr(dispatcher, "refresh_hccl_group", None)
-                if callable(refresh_fn):
-                    refresh_fn()
-
-            reset_runtime_tensor_state(snapshot_state_owners)
-
-            logger.info("[snapshot] [parallel] rank %s: refreshed cached MoE parallel and HCCL groups", self.rank)
-
-        logger.info(
-            "[snapshot] [parallel] rank %s: rebuild_parallel_group cost %.2fs",
-            self.rank,
-            time.time() - rebuild_time_start,
-        )
-
-    def update_worker_info_after_resume(self, local_ip: str, data_parallel_master_ip: str) -> None:
-        """Update worker network and master info after resume."""
-        os.environ["HCCL_IF_IP"] = local_ip
-        self.vllm_config.parallel_config.data_parallel_master_ip = data_parallel_master_ip
-        logger.info(
-            "[snapshot] [worker] rank %s: HCCL_IF_IP=%s data_parallel_master_ip=%s",
-            self.rank,
-            local_ip,
-            data_parallel_master_ip,
-        )
-
-    def rebuild_kv_transfer_engine_after_resume(self, local_ip: str, new_engine_id: str | None = None) -> None:
-        """[snapshot] Rebuild KV transfer endpoints after container resume."""
-        kv_cfg = self.vllm_config.kv_transfer_config
-        if kv_cfg is None:
-            return
-        if not (getattr(kv_cfg, "is_kv_producer", False) or getattr(kv_cfg, "is_kv_consumer", False)):
-            return
-        if not has_kv_transfer_group():
-            return
-        rebuild = getattr(
-            getattr(get_kv_transfer_group(), "connector_worker", None),
-            "rebuild_kv_transfer_endpoint",
-            None,
-        )
-        if callable(rebuild):
-            rebuild(local_ip, new_engine_id)
+        resume_worker(self, local_ip, data_parallel_master_ip, model_path, new_engine_id)
 
     def load_model(self) -> None:
         if self.vllm_config.model_config.enable_sleep_mode:
@@ -1074,34 +894,6 @@ class NPUWorker(WorkerBase):
                 0.0,
             ),
         )
-
-    def recapture_graph(self) -> None:
-        if self.model_config.enforce_eager:
-            logger.info("[snapshot][worker] rank %s: enforce_eager is True, skip recapture graph", self.rank)
-            return
-
-        from vllm_ascend.compilation.acl_graph import (
-            clear_all_aclgraph_entries,
-            clear_graph_params_for_recapture,
-        )
-
-        clear_all_aclgraph_entries()
-        clear_graph_params_for_recapture()
-
-        # re-capture graph and warm up model after snapshot restore
-        self.model_runner.capture_model()
-        self.model_runner.restore_drafter_runtime_buffers()
-
-        # Call ATB matmul to warm up; otherwise, the first operation (ReshapeAndCache)
-        # may cause performance degradation at runtime.
-        if get_ascend_device_type() != AscendDeviceType.A5:
-            self._warm_up_atb()
-
-    def _warm_up_atb(self):
-        x = torch.rand((2, 4), dtype=torch.float16).npu()
-        weight = torch.rand((2, 4), dtype=torch.float16).npu()
-        c = torch.rand((4, 4), dtype=torch.float32).npu()
-        torch_npu._npu_matmul_add_fp32(x, weight, c)
 
     def get_model(self) -> nn.Module:
         return self.model_runner.get_model()
