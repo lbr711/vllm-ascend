@@ -87,6 +87,7 @@ from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 from vllm_ascend.profiler.torch_npu_profiler import TorchNPUProfilerWrapper
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot
 from vllm_ascend.snapshot.state import snapshot_hccl_teardown
+from vllm_ascend.snapshot.tensor_state import reset_runtime_tensor_state
 from vllm_ascend.utils import (
     AscendDeviceType,
     check_ascend_device_type,
@@ -897,6 +898,7 @@ class NPUWorker(WorkerBase):
             from vllm_ascend.distributed.parallel_state import get_mc2_group
             from vllm_ascend.ops.fused_moe.moe_comm_method import _MoECommMethods
 
+            snapshot_state_owners = []
             for comm_method in _MoECommMethods.values():
                 moe_config = getattr(comm_method, "moe_config", None)
                 if moe_config is not None:
@@ -907,9 +909,12 @@ class NPUWorker(WorkerBase):
                         moe_config.mc2_group = get_mc2_group()
 
                 dispatcher = getattr(comm_method, "token_dispatcher", None)
+                snapshot_state_owners.extend((comm_method, dispatcher))
                 refresh_fn = getattr(dispatcher, "refresh_hccl_group", None)
                 if callable(refresh_fn):
                     refresh_fn()
+
+            reset_runtime_tensor_state(snapshot_state_owners)
 
             logger.info("[snapshot] [parallel] rank %s: refreshed cached MoE parallel and HCCL groups", self.rank)
 
