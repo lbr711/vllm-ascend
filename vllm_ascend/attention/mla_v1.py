@@ -47,6 +47,7 @@ from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.memcache_comm_fence import record_attention_compute_start
 from vllm_ascend.ops.rotary_embedding import get_cos_and_sin_mla, get_identity_cos_and_sin_mla
+from vllm_ascend.quantization.methods.kv_c8 import restore_fa_quant_tensor_state
 from vllm_ascend.quantization.methods.w8a8_mxfp8 import AscendW8A8MXFP8DynamicLinearMethod
 from vllm_ascend.quantization.methods.w8a8_static import AscendW8A8LinearMethod
 from vllm_ascend.quantization.utils import enable_fa_quant
@@ -1208,6 +1209,8 @@ class AscendMLAImpl(MLAAttentionImpl):
             else:
                 self._process_weights_for_fused_mlapo(act_dtype)
         elif self.fa_quant_layer:
+            layer = self.vllm_config.compilation_config.static_forward_context[self.layer_name]
+            restore_fa_quant_tensor_state(layer, self.kv_lora_rank)
             self._process_weights_for_fused_fa_quant()
         else:
             # if mlapo, W_UK_T can't trans nz
