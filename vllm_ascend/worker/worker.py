@@ -79,7 +79,7 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
 from vllm_ascend.distributed.parallel_state import init_ascend_model_parallel
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 from vllm_ascend.profiler.torch_npu_profiler import TorchNPUProfilerWrapper
-from vllm_ascend.snapshot.worker import resume_worker, suspend_worker, unlock_worker
+from vllm_ascend.snapshot.worker_lifecycle import resume_worker, suspend_worker, unlock_worker
 from vllm_ascend.utils import (
     AscendDeviceType,
     check_ascend_device_type,
