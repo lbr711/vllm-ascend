@@ -155,6 +155,8 @@ from vllm_ascend.quantization.utils import enable_fa_quant
 from vllm_ascend.sample.sampler import AscendSampler
 from vllm_ascend.snapshot.model_state import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.tensor_state import (
+    reset_model_runtime_tensor_state,
+    reset_runtime_tensor_state,
     restore_derived_tensor_state,
     restore_global_tensor_state,
 )
@@ -3680,9 +3682,8 @@ class NPUModelRunner(GPUModelRunner):
         # Clear per-builder runtime metadata cache (MLA/DSA/etc.) so the first
         # post-resume forward cannot read stale host/device tensors.
         self._reset_resume_attention_builder_runtime_states()
-        # SFA keeps sparse-index and reshape metadata outside ``state_dict``.
-        # Restore their cold-start sentinels before the first post-resume build.
-        self._reset_resume_sfa_runtime_buffers()
+        # Restore model and runner-owned runtime tensors to cold-start values.
+        self._reset_resume_runtime_tensor_states()
         # Re-zero block-table device rows that are never re-copied from CPU
         # (row >= num_reqs). After restore they hold garbage which the MTP
         # drafter's look-ahead slot computation can read, producing an
@@ -3707,64 +3708,21 @@ class NPUModelRunner(GPUModelRunner):
             input_batch.prev_req_id_to_index = None
 
     def _reset_resume_attention_builder_runtime_states(self) -> None:
-        """Best-effort reset for attention metadata builders.
-
-        Some builders keep runtime tensors (e.g. chunked prefill metadata) as
-        object fields and reuse them across iterations. After snapshot restore
-        these buffers may hold stale device context and trigger ACL sync errors.
-        """
-        total = 0
-        reset = 0
-        failed: list[str] = []
-        seen_ids: set[int] = set()
-
-        attn_groups = getattr(self, "attn_groups", None)
-        if not attn_groups:
-            logger.info("[restore model] attention builder runtime reset skipped: no attn_groups")
-            return
-
-        for kv_groups in attn_groups:
-            for attn_group in kv_groups:
-                builders: list[object] = []
-                explicit_builders = getattr(attn_group, "attn_metadata_builders", None)
-                if isinstance(explicit_builders, list):
-                    builders.extend(explicit_builders)
-                get_builder = getattr(attn_group, "get_metadata_builder", None)
-                if callable(get_builder):
-                    try:
-                        builder0 = get_builder(0)
-                        builders.append(builder0)
-                    except Exception as exc:  # noqa: BLE001
-                        failed.append(f"get_builder:{type(exc).__name__}:{exc}")
-
-                for builder in builders:
-                    if builder is None:
-                        continue
-                    bid = id(builder)
-                    if bid in seen_ids:
-                        continue
-                    seen_ids.add(bid)
-                    total += 1
-                    reset_fn = getattr(builder, "reset_runtime_cache", None)
-                    if not callable(reset_fn):
-                        continue
-                    try:
-                        reset_fn()
-                        reset += 1
-                    except Exception as exc:  # noqa: BLE001
-                        failed.append(
-                            f"{type(builder).__name__}:{type(exc).__name__}:{exc}"
-                        )
-
+        builders = [
+            builder
+            for kv_groups in self.attn_groups
+            for attn_group in kv_groups
+            for builder in attn_group.metadata_builders
+        ]
+        reset = reset_runtime_tensor_state(builders)
         logger.info(
-            "[restore model] attention builder runtime reset: total=%d reset=%d%s",
-            total,
+            "[restore model] attention builder runtime reset: total=%d reset=%d",
+            len(builders),
             reset,
-            "" if not failed else f", failed={failed[: min(8, len(failed))]}",
         )
 
-    def _reset_resume_sfa_runtime_buffers(self) -> None:
-        """[snapshot] Clear reusable SFA index/reshape metadata after restore.
+    def _reset_resume_runtime_tensor_states(self) -> None:
+        """Restore reusable model and runner tensors to cold-start values.
 
         ``topk_indices_buffer`` is allocated with ``torch.empty`` on the model
         and shared by indexer-bearing and ``skip_topk`` layers (and, for MTP, by
@@ -3773,85 +3731,24 @@ class NPUModelRunner(GPUModelRunner):
         skip layer from consuming snapshot-time indices before the preceding
         indexer layer refreshes the active rows.
 
-        The C8 reshape metadata buffers are runner-owned staged buffers. Clear
+        The SFA C8 reshape metadata buffers are runner-owned staged buffers. Clear
         both CPU and device storage so ``store_kv_block_metadata`` starts from
         the same state as a cold process. Main/indexer KV caches are deliberately
         not cleared here: they are paged state owned by the cache manager and
         may contain valid restored prefix data.
         """
 
-        from vllm_ascend.attention.sfa_v1 import AscendSFABackend
+        for staged in (self.group_len, self.group_key_idx, self.group_key_cache_idx):
+            staged.gpu.fill_(0)
+            staged.cpu.fill_(0)
 
-        attn_backend = getattr(self, "attn_backend", None)
-        if not isinstance(attn_backend, type) or not issubclass(
-            attn_backend, AscendSFABackend
-        ):
-            logger.info(
-                "[restore model] SFA runtime buffer reset skipped: backend=%s",
-                getattr(attn_backend, "__name__", type(attn_backend).__name__),
-            )
-            return
-
-        reset_topk = 0
-        reset_group_tensors = 0
-        failed: list[str] = []
-        seen_tensors: set[int] = set()
-
-        def reset_tensor(tensor: object, value: int, where: str) -> bool:
-            if not isinstance(tensor, torch.Tensor):
-                return False
-            tensor_id = id(tensor)
-            if tensor_id in seen_tensors:
-                return False
-            seen_tensors.add(tensor_id)
-            try:
-                tensor.fill_(value)
-                return True
-            except Exception as exc:  # noqa: BLE001
-                failed.append(f"{where}:{type(exc).__name__}:{exc}")
-                return False
-
-        for attr_name in (
-            "group_len",
-            "group_key_idx",
-            "group_key_cache_idx",
-        ):
-            staged = getattr(self, attr_name, None)
-            for storage_name in ("gpu", "cpu"):
-                if reset_tensor(
-                    getattr(staged, storage_name, None),
-                    0,
-                    f"{attr_name}.{storage_name}",
-                ):
-                    reset_group_tensors += 1
-
-        roots = [self.get_model(), self._get_drafter_model()]
-        seen_objects: set[int] = set()
-        for root in roots:
-            if root is None:
-                continue
-            objects: list[tuple[str, object]] = [("", root)]
-            objects.extend(root.named_modules())
-            for name, obj in objects:
-                for suffix, candidate in (
-                    ("", obj),
-                    (".impl", getattr(obj, "impl", None)),
-                ):
-                    if candidate is None or id(candidate) in seen_objects:
-                        continue
-                    seen_objects.add(id(candidate))
-                    if reset_tensor(
-                        getattr(candidate, "topk_indices_buffer", None),
-                        -1,
-                        f"{name or '<root>'}{suffix}.topk_indices_buffer",
-                    ):
-                        reset_topk += 1
+        reset = reset_model_runtime_tensor_state(
+            (self.get_model(), self._get_drafter_model())
+        )
 
         logger.info(
-            "[restore model] reset SFA runtime buffers: topk=%d group_tensors=%d%s",
-            reset_topk,
-            reset_group_tensors,
-            "" if not failed else f", failed={failed[: min(8, len(failed))]}",
+            "[restore model] reset model-owned runtime tensor state for %d owners",
+            reset,
         )
 
     def _reset_resume_block_table_device_buffers(self) -> None:
@@ -3885,31 +3782,11 @@ class NPUModelRunner(GPUModelRunner):
         address". Zeroing CPU keeps the commit a zero no-op until real requests
         re-populate it via ``_prepare_inputs``, exactly matching the cold start.
         """
-        input_batch = getattr(self, "input_batch", None)
-        mgbt = getattr(input_batch, "block_table", None) if input_batch is not None else None
-        tables = getattr(mgbt, "block_tables", None)
-        if not tables:
-            logger.info("[restore model] block-table device reset skipped: no block tables")
-            return
-        zeroed = 0
-        failed: list[str] = []
-        for idx, bt in enumerate(tables):
-            buf = getattr(bt, "block_table", None)
-            gpu = getattr(buf, "gpu", None)
-            if gpu is None:
-                continue
-            try:
-                gpu.zero_()
-                cpu = getattr(buf, "cpu", None)
-                if cpu is not None:
-                    cpu.zero_()
-                zeroed += 1
-            except Exception as exc:  # noqa: BLE001
-                failed.append(f"group{idx}:{type(exc).__name__}:{exc}")
+        block_table = self.input_batch.block_table
+        block_table.clear()
         logger.info(
-            "[restore model] zeroed %d block-table device tensor(s) to restore cold-start invariant%s",
-            zeroed,
-            "" if not failed else f", failed={failed[: min(8, len(failed))]}",
+            "[restore model] zeroed %d block-table device tensor(s)",
+            len(block_table.block_tables),
         )
 
     def load_model(self) -> None:

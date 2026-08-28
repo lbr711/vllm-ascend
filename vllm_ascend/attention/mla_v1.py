@@ -449,7 +449,7 @@ class AscendMLAMetadataBuilder(MLACommonMetadataBuilder[AscendMLAMetadata]):
         self.seq_lens: torch.Tensor = None
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
 
-    def reset_runtime_cache(self) -> None:
+    def reset_snapshot_runtime_state(self) -> None:
         # [snapshot] Clear per-iteration runtime metadata so post-resume build
         # cannot accidentally reuse stale host/device buffers.
         self.chunk_seq_lens = None

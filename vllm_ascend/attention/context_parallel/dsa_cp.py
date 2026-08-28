@@ -240,7 +240,7 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         # [block_nums, block_size, head_num, head_dim]
         self.slot_mapping = torch.zeros(self.slot_mapping_shape, dtype=torch.int32, device=self.device)
 
-    def reset_runtime_cache(self) -> None:
+    def reset_snapshot_runtime_state(self) -> None:
         """[snapshot] Restore cold-start DSA-CP metadata state after resume.
 
         DSA-CP keeps per-iteration metadata and reusable device tensors on the

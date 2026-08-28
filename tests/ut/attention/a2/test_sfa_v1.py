@@ -369,7 +369,7 @@ class TestAscendSFASnapshotRestore(TestBase):
             torch.full((4,), 23, dtype=torch.int32),
         ]
 
-        builder.reset_runtime_cache()
+        builder.reset_snapshot_runtime_state()
 
         buffers = [
             builder.actual_seq_lengths_query,
