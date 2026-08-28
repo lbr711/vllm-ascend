@@ -5,7 +5,12 @@ import pytest
 import torch
 
 from vllm_ascend.snapshot.tensor_state import restore_derived_tensor_state
-from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+from vllm_ascend.snapshot.model_runner import (
+    _reset_block_table_device_buffers,
+    _reset_runtime_tensor_states,
+    dump_model_runner,
+    restore_model_runner,
+)
 
 
 class _TopKHolder(torch.nn.Module):
@@ -39,8 +44,63 @@ class _FailingReloadTarget:
         raise RuntimeError("restore failed")
 
 
+def _make_runner(model, drafter_model):
+    return SimpleNamespace(
+        vllm_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(tensor_parallel_size=8),
+            model_config=SimpleNamespace(model="/models/test-model"),
+        ),
+        model_config=SimpleNamespace(dtype=torch.bfloat16, hf_config=object()),
+        dp_size=2,
+        dp_rank=1,
+        device=torch.device("cpu"),
+        drafter=SimpleNamespace(model=drafter_model),
+        get_model=lambda: model,
+    )
+
+
+def test_dump_model_runner_dumps_target_and_drafter(tmp_path):
+    runner = _make_runner(torch.nn.Module(), torch.nn.Module())
+
+    with (
+        patch("vllm_ascend.snapshot.model_runner.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runner.dump_state_dict") as dump,
+    ):
+        tp_group.return_value.rank_in_group = 3
+        dump_model_runner(runner, str(tmp_path))
+
+    assert dump.call_count == 2
+    assert str(dump.call_args_list[0].args[1]).endswith("model_ckpt.1tp3.pth")
+    assert str(dump.call_args_list[1].args[1]).endswith("model_ckpt_drafter.1tp3.pth")
+
+
+def test_restore_model_runner_restores_target_and_drafter(tmp_path):
+    model = torch.nn.Module()
+    drafter_model = torch.nn.Module()
+    runner = _make_runner(model, drafter_model)
+
+    with (
+        patch("vllm_ascend.snapshot.model_runner.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runner._restore_one_model") as restore_one,
+        patch("vllm_ascend.snapshot.model_runner.restore_global_tensor_state"),
+        patch("vllm_ascend.snapshot.model_runner._clear_spec_decode_carryover"),
+        patch("vllm_ascend.snapshot.model_runner.restore_drafter_runtime_buffers"),
+        patch("vllm_ascend.snapshot.model_runner._reset_attention_builder_runtime_states"),
+        patch("vllm_ascend.snapshot.model_runner._reset_runtime_tensor_states"),
+        patch("vllm_ascend.snapshot.model_runner._reset_block_table_device_buffers"),
+    ):
+        tp_group.return_value.rank_in_group = 3
+        restore_model_runner(runner, str(tmp_path))
+
+    assert restore_one.call_count == 2
+    assert restore_one.call_args_list[0].args[1] is model
+    assert restore_one.call_args_list[0].args[3] == "model"
+    assert restore_one.call_args_list[1].args[1] is drafter_model
+    assert restore_one.call_args_list[1].args[3] == "drafter"
+
+
 def test_reset_resume_runtime_tensor_states_clears_shared_state():
-    runner = NPUModelRunner.__new__(NPUModelRunner)
+    runner = SimpleNamespace()
     runner.group_len = SimpleNamespace(
         gpu=torch.full((4,), 3, dtype=torch.int32),
         cpu=torch.full((4,), 5, dtype=torch.int32),
@@ -59,9 +119,9 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
     model.child = _TopKHolder(shared_topk)
     drafter = _TopKHolder(shared_topk)
     runner.get_model = lambda: model
-    runner._get_drafter_model = lambda: drafter
+    runner.drafter = SimpleNamespace(model=drafter)
 
-    runner._reset_resume_runtime_tensor_states()
+    _reset_runtime_tensor_states(runner)
 
     for staged in (
         runner.group_len,
@@ -94,10 +154,10 @@ def test_reload_derived_weights_propagates_failure():
 
 
 def test_reset_block_tables_delegates_to_owner():
-    runner = NPUModelRunner.__new__(NPUModelRunner)
+    runner = SimpleNamespace()
     block_table = SimpleNamespace(clear=Mock(), block_tables=[object(), object()])
     runner.input_batch = SimpleNamespace(block_table=block_table)
 
-    runner._reset_resume_block_table_device_buffers()
+    _reset_block_table_device_buffers(runner)
 
     block_table.clear.assert_called_once_with()

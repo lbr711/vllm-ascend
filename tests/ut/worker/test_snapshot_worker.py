@@ -82,12 +82,13 @@ def test_snapshot_suspend_runs_npu_snapshot_sequence(worker):
     with (
         patch("vllm_ascend.snapshot.worker.gc.collect") as collect,
         patch("vllm_ascend.snapshot.worker._call_aclrt_snapshot_api") as call_aclrt,
+        patch("vllm_ascend.snapshot.worker.dump_model_runner") as dump_model,
     ):
         from vllm_ascend.snapshot.worker import suspend_worker
 
         suspend_worker(worker, "/tmp/model")
 
-    worker.model_runner.dump_model.assert_called_once_with(path="/tmp/model")
+    dump_model.assert_called_once_with(worker.model_runner, "/tmp/model")
     collect.assert_called_once_with()
     assert [call.args[1] for call in call_aclrt.call_args_list] == [
         "aclrtSnapShotProcessLock",
@@ -100,6 +101,7 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
         patch("vllm_ascend.snapshot.worker._call_aclrt_snapshot_api") as call_aclrt,
         patch("vllm_ascend.snapshot.worker._update_worker_info") as update_worker,
         patch("vllm_ascend.snapshot.worker._rebuild_parallel_groups") as rebuild_parallel,
+        patch("vllm_ascend.snapshot.worker.restore_model_runner") as restore_model,
         patch("vllm_ascend.snapshot.worker._recapture_graph") as recapture_graph,
         patch("vllm_ascend.snapshot.worker._rebuild_kv_transfer_engine") as rebuild_kv,
     ):
@@ -113,7 +115,7 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
     ]
     update_worker.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3")
     rebuild_parallel.assert_called_once_with(worker)
-    worker.model_runner.restore_model.assert_called_once_with(path="/tmp/model")
+    restore_model.assert_called_once_with(worker.model_runner, "/tmp/model")
     recapture_graph.assert_called_once_with(worker)
     rebuild_kv.assert_called_once_with(worker, "10.0.0.2", "engine-id")
 
@@ -247,6 +249,7 @@ def test_recapture_graph_clears_and_recaptures(worker):
     with (
         patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries") as mock_clear_entries,
         patch("vllm_ascend.compilation.acl_graph.clear_graph_params_for_recapture") as mock_clear_params,
+        patch("vllm_ascend.snapshot.worker.restore_drafter_runtime_buffers") as restore_drafter,
         patch("vllm_ascend.snapshot.worker._warm_up_atb"),
     ):
         _recapture_graph(worker)
@@ -254,3 +257,4 @@ def test_recapture_graph_clears_and_recaptures(worker):
     mock_clear_entries.assert_called_once()
     mock_clear_params.assert_called_once()
     worker.model_runner.capture_model.assert_called_once()
+    restore_drafter.assert_called_once_with(worker.model_runner)
