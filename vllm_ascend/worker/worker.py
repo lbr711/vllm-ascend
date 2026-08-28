@@ -85,8 +85,7 @@ from vllm_ascend.distributed.parallel_state import (
 )
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 from vllm_ascend.profiler.torch_npu_profiler import TorchNPUProfilerWrapper
-from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot
-from vllm_ascend.snapshot.hccl_teardown import snapshot_hccl_teardown
+from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
 from vllm_ascend.snapshot.tensor_state import reset_runtime_tensor_state
 from vllm_ascend.utils import (
     AscendDeviceType,
