@@ -17,8 +17,6 @@
 # Adapted from vllm-project/vllm/vllm/worker/gpu_model_runner.py
 #
 
-import ctypes
-import gc
 import logging
 import math
 import os
@@ -155,6 +153,7 @@ from vllm_ascend.ops.triton.spec_decode.ngram import triton_ngram_spec_decode
 from vllm_ascend.patch.worker.patch_draft_quarot import patch_load_weights
 from vllm_ascend.quantization.utils import enable_fa_quant
 from vllm_ascend.sample.sampler import AscendSampler
+from vllm_ascend.snapshot.model_state import dump_state_dict, restore_state_dict
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
@@ -3607,32 +3606,7 @@ class NPUModelRunner(GPUModelRunner):
         return model if isinstance(model, nn.Module) else None
 
     def _dump_one_model(self, model: nn.Module, model_save_path: str) -> None:
-        if os.path.exists(model_save_path):
-            logger.info("model save path %s exists, skip dump model", model_save_path)
-            return
-        logger.info("[dump model] start dump model to %s (type=%s)", model_save_path, type(model))
-        start = time.time()
-        import psutil  # type: ignore[import-untyped]
-        process = psutil.Process(os.getpid())
-        logger.info("start dump_model() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
-        torch.save(model.state_dict(), model_save_path)
-        gc.collect()
-        logger.info("after gc.collect() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
-        torch.npu.empty_cache()
-        logger.info("after torch.npu.empty_cache() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
-        try:
-            libc = ctypes.CDLL("libc.so.6")
-            result = libc.malloc_trim(0)
-            if result == 1:
-                print("exec malloc_trim(0) success")
-            else:
-                print("exec malloc_trim(0) fail")
-        except Exception as e:
-            print(f"exec malloc_trim(0) with error: {e}")
-
-        logger.info("after dump_model() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
-        elapse = time.time() - start
-        logger.info("[dump model] save model ckpt to %s, elapse %.4f s", model_save_path, elapse)
+        dump_state_dict(model, model_save_path)
 
     def dump_model(self, path="/mnt") -> None:
         tp_size = self.vllm_config.parallel_config.tensor_parallel_size
@@ -3655,35 +3629,7 @@ class NPUModelRunner(GPUModelRunner):
             )
 
     def _restore_one_model(self, model: nn.Module, model_save_path: str, label: str) -> None:
-        if not os.path.exists(model_save_path):
-            logger.warning("[restore model] [%s] ckpt %s not found, skip", label, model_save_path)
-            return
-        start = time.time()
-        sd = torch.load(model_save_path, map_location="cpu", mmap=True)
-        logger.info(
-            "[restore model] [%s] load model to cpu from %s, elapse %ss, the num of items is %s",
-            label,
-            model_save_path,
-            time.time() - start,
-            len(sd.items()),
-        )
-        cnt = 0
-        param_dict = dict(model.named_parameters())
-        buffer_dict = dict(model.named_buffers())
-        for name, cpu_tensor in sd.items():
-            if name in param_dict:
-                param_dict[name].data.copy_(cpu_tensor)
-                cnt += 1
-            if name in buffer_dict:
-                buffer_dict[name].data.copy_(cpu_tensor)
-                cnt += 1
-        logger.info("[restore model] [%s] replace success %s / %s", label, cnt, len(sd.items()))
-        logger.info(
-            "[restore model] [%s] restore model ckpt from %s, elapse %.4f s",
-            label,
-            model_save_path,
-            time.time() - start,
-        )
+        restore_state_dict(model, model_save_path, label)
 
         # [snapshot] Restore/re-derive decode-path state produced by
         # ``process_weights_after_loading``. MLA can rebuild absorbed weights
