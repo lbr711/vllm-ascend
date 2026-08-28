@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -12,6 +12,9 @@ class _TopKHolder(torch.nn.Module):
     def __init__(self, buffer: torch.Tensor) -> None:
         super().__init__()
         self.topk_indices_buffer = buffer
+
+    def reset_snapshot_runtime_state(self) -> None:
+        self.topk_indices_buffer.fill_(-1)
 
 
 class _BackendSpecificReloadTarget:
@@ -36,7 +39,7 @@ class _FailingReloadTarget:
         raise RuntimeError("restore failed")
 
 
-def test_reset_resume_sfa_runtime_buffers_clears_shared_state():
+def test_reset_resume_runtime_tensor_states_clears_shared_state():
     runner = NPUModelRunner.__new__(NPUModelRunner)
     runner.group_len = SimpleNamespace(
         gpu=torch.full((4,), 3, dtype=torch.int32),
@@ -58,7 +61,7 @@ def test_reset_resume_sfa_runtime_buffers_clears_shared_state():
     runner.get_model = lambda: model
     runner._get_drafter_model = lambda: drafter
 
-    runner._reset_resume_sfa_runtime_buffers()
+    runner._reset_resume_runtime_tensor_states()
 
     for staged in (
         runner.group_len,
@@ -88,3 +91,13 @@ def test_reload_derived_weights_propagates_failure():
             torch.bfloat16,
             "model",
         )
+
+
+def test_reset_block_tables_delegates_to_owner():
+    runner = NPUModelRunner.__new__(NPUModelRunner)
+    block_table = SimpleNamespace(clear=Mock(), block_tables=[object(), object()])
+    runner.input_batch = SimpleNamespace(block_table=block_table)
+
+    runner._reset_resume_block_table_device_buffers()
+
+    block_table.clear.assert_called_once_with()

@@ -279,7 +279,7 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
         self.rope_dim = self.model_config.hf_text_config.qk_rope_head_dim
         self.enable_dsa_cp = enable_dsa_cp()
 
-    def reset_runtime_cache(self) -> None:
+    def reset_snapshot_runtime_state(self) -> None:
         """[snapshot] Restore cold-start contents of reusable SFA metadata.
 
         These tensors are plain builder attributes rather than module buffers,
@@ -861,6 +861,10 @@ class AscendSFAImpl(MLAAttentionImpl):
         self.quant_offset1 = self.q_proj.input_offset.data
         self.ctkv_scale = torch.tensor([1], dtype=act_dtype, device=device)
         self.q_nope_scale = torch.tensor([1], dtype=act_dtype, device=device)
+
+    def reset_snapshot_runtime_state(self) -> None:
+        if self.topk_indices_buffer is not None:
+            self.topk_indices_buffer.fill_(-1)
 
     def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None:
         """[snapshot] Rebind/rebuild SFA non-persistent decode-path weights.

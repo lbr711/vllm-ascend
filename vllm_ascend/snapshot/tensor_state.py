@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Protocol
 
 import torch
@@ -11,6 +11,8 @@ from vllm.logger import logger
 class SnapshotTensorStateOwner(Protocol):
     def restore_snapshot_tensor_state(self, act_dtype: torch.dtype) -> None: ...
 
+    def reset_snapshot_runtime_state(self) -> None: ...
+
 
 def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
     seen_ids: set[int] = set()
@@ -20,6 +22,30 @@ def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]
                 continue
             seen_ids.add(id(owner))
             yield f"{name}{suffix}", owner
+
+
+def reset_runtime_tensor_state(owners: Iterable[object]) -> int:
+    reset = 0
+    seen_ids: set[int] = set()
+    for owner in owners:
+        if id(owner) in seen_ids:
+            continue
+        seen_ids.add(id(owner))
+        reset_state = getattr(owner, "reset_snapshot_runtime_state", None)
+        if callable(reset_state):
+            reset_state()
+            reset += 1
+    return reset
+
+
+def reset_model_runtime_tensor_state(models: Iterable[nn.Module | None]) -> int:
+    owners = (
+        owner
+        for model in models
+        if model is not None
+        for _, owner in _iter_derived_state_owners(model)
+    )
+    return reset_runtime_tensor_state(owners)
 
 
 def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label: str) -> None:
