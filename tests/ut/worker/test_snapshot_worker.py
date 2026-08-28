@@ -28,7 +28,6 @@ def npu_worker_cls():
     sys.modules.pop("vllm_ascend.worker.worker", None)
     from vllm_ascend.worker.worker import NPUWorker
 
-    NPUWorker._acl_rt_lib = None
     return NPUWorker
 
 
@@ -55,99 +54,96 @@ def worker(npu_worker_cls):
     return worker
 
 
-def test_get_acl_rt_lib_uses_cached_instance(npu_worker_cls):
+def test_get_acl_rt_lib_uses_cached_instance():
+    from vllm_ascend.snapshot import worker as snapshot_worker
+
     cached = MagicMock()
-    npu_worker_cls._acl_rt_lib = cached
+    snapshot_worker._ACL_RT_LIB = cached
 
-    assert npu_worker_cls._get_acl_rt_lib() is cached
+    assert snapshot_worker._get_acl_rt_lib() is cached
 
 
-@pytest.mark.parametrize(
-    ("method_name", "api_name"),
-    [
-        pytest.param("snapshot_process_lock", "aclrtSnapShotProcessLock", id="lock"),
-        pytest.param("snapshot_process_backup", "aclrtSnapShotProcessBackup", id="backup"),
-        pytest.param("snapshot_process_restore", "aclrtSnapShotProcessRestore", id="restore"),
-        pytest.param("snapshot_process_unlock", "aclrtSnapShotProcessUnlock", id="unlock"),
-    ],
-)
-def test_aclrt_snapshot_wrappers_call_expected_api(worker, method_name, api_name):
-    with patch.object(worker, "_call_aclrt_snapshot_api") as mock_call:
-        getattr(worker, method_name)()
+def test_worker_snapshot_methods_delegate(worker):
+    with (
+        patch("vllm_ascend.worker.worker.suspend_worker") as suspend,
+        patch("vllm_ascend.worker.worker.resume_worker") as resume,
+        patch("vllm_ascend.worker.worker.unlock_worker") as unlock,
+    ):
+        worker.suspend("/tmp/model")
+        worker.resume("10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+        worker.device_unlock()
 
-    mock_call.assert_called_once_with(api_name)
+    suspend.assert_called_once_with(worker, "/tmp/model")
+    resume.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+    unlock.assert_called_once_with(worker)
 
 
 def test_snapshot_suspend_runs_npu_snapshot_sequence(worker):
     with (
-        patch.object(worker, "dump_model") as dump_model,
-        patch("vllm_ascend.worker.worker.gc.collect") as collect,
-        patch.object(worker, "snapshot_process_lock") as process_lock,
-        patch.object(worker, "snapshot_process_backup") as process_backup,
+        patch("vllm_ascend.snapshot.worker.gc.collect") as collect,
+        patch("vllm_ascend.snapshot.worker._call_aclrt_snapshot_api") as call_aclrt,
     ):
-        worker.suspend("/tmp/model")
+        from vllm_ascend.snapshot.worker import suspend_worker
 
-    dump_model.assert_called_once_with("/tmp/model")
+        suspend_worker(worker, "/tmp/model")
+
+    worker.model_runner.dump_model.assert_called_once_with(path="/tmp/model")
     collect.assert_called_once_with()
-    process_lock.assert_called_once_with()
-    process_backup.assert_called_once_with()
+    assert [call.args[1] for call in call_aclrt.call_args_list] == [
+        "aclrtSnapShotProcessLock",
+        "aclrtSnapShotProcessBackup",
+    ]
 
 
 def test_snapshot_resume_runs_npu_restore_phases(worker):
     with (
-        patch.object(worker, "snapshot_process_restore") as process_restore,
-        patch.object(worker, "snapshot_process_unlock") as process_unlock,
-        patch.object(worker, "update_worker_info_after_resume") as update_worker,
-        patch.object(worker, "rebuild_parallel_group_after_resume") as rebuild_parallel,
-        patch.object(worker, "re_load_weights") as reload_weights,
-        patch.object(worker, "recapture_graph") as recapture_graph,
-        patch.object(worker, "rebuild_kv_transfer_engine_after_resume") as rebuild_kv,
+        patch("vllm_ascend.snapshot.worker._call_aclrt_snapshot_api") as call_aclrt,
+        patch("vllm_ascend.snapshot.worker._update_worker_info") as update_worker,
+        patch("vllm_ascend.snapshot.worker._rebuild_parallel_groups") as rebuild_parallel,
+        patch("vllm_ascend.snapshot.worker._recapture_graph") as recapture_graph,
+        patch("vllm_ascend.snapshot.worker._rebuild_kv_transfer_engine") as rebuild_kv,
     ):
-        worker.resume("10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+        from vllm_ascend.snapshot.worker import resume_worker
 
-    process_restore.assert_called_once_with()
-    process_unlock.assert_called_once_with()
-    update_worker.assert_called_once_with("10.0.0.2", "10.0.0.3")
-    rebuild_parallel.assert_called_once_with()
-    reload_weights.assert_called_once_with("/tmp/model")
-    recapture_graph.assert_called_once_with()
-    rebuild_kv.assert_called_once_with("10.0.0.2", "engine-id")
+        resume_worker(worker, "10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+
+    assert [call.args[1] for call in call_aclrt.call_args_list] == [
+        "aclrtSnapShotProcessRestore",
+        "aclrtSnapShotProcessUnlock",
+    ]
+    update_worker.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3")
+    rebuild_parallel.assert_called_once_with(worker)
+    worker.model_runner.restore_model.assert_called_once_with(path="/tmp/model")
+    recapture_graph.assert_called_once_with(worker)
+    rebuild_kv.assert_called_once_with(worker, "10.0.0.2", "engine-id")
 
 
 def test_call_aclrt_snapshot_api_invokes_aclrt_library(worker):
+    from vllm_ascend.snapshot.worker import _call_aclrt_snapshot_api
+
     mock_api = MagicMock(return_value=0)
     mock_lib = MagicMock()
     mock_lib.aclrtSnapShotProcessLock = mock_api
 
-    with patch.object(worker, "_get_acl_rt_lib", return_value=mock_lib):
-        worker._call_aclrt_snapshot_api("aclrtSnapShotProcessLock")
+    with patch("vllm_ascend.snapshot.worker._get_acl_rt_lib", return_value=mock_lib):
+        _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")
 
     mock_api.assert_called_once()
-
-
-def test_dump_model_delegates_to_model_runner(worker):
-    worker.dump_model(model_save_path="/tmp/model")
-
-    worker.model_runner.dump_model.assert_called_once_with(path="/tmp/model")
-
-
-def test_re_load_weights_delegates_to_model_runner(worker):
-    worker.re_load_weights(model_path="/tmp/model")
-
-    worker.model_runner.restore_model.assert_called_once_with(path="/tmp/model")
 
 
 @pytest.mark.parametrize("snapshot_config", [object(), None])
 def test_parallel_group_clean_up_destroys_parallel_and_dist_env(
     worker, snapshot_config
 ):
+    from vllm_ascend.snapshot.worker import _parallel_group_cleanup
+
     worker.vllm_config.snapshot_config = snapshot_config
     with (
-        patch("vllm_ascend.worker.worker.destroy_ascend_model_parallel") as mock_destroy,
-        patch("vllm_ascend.worker.worker.cleanup_dist_env_for_snapshot") as mock_cleanup,
-        patch("vllm_ascend.worker.worker.snapshot_hccl_teardown") as teardown,
+        patch("vllm_ascend.snapshot.worker.destroy_ascend_model_parallel") as mock_destroy,
+        patch("vllm_ascend.snapshot.worker.cleanup_dist_env_for_snapshot") as mock_cleanup,
+        patch("vllm_ascend.snapshot.worker.snapshot_hccl_teardown") as teardown,
     ):
-        worker.parallel_group_clean_up()
+        _parallel_group_cleanup(worker)
 
     teardown.assert_called_once_with(snapshot_config is not None)
     mock_destroy.assert_called_once()
@@ -155,6 +151,8 @@ def test_parallel_group_clean_up_destroys_parallel_and_dist_env(
 
 
 def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
+    from vllm_ascend.snapshot.worker import _rebuild_parallel_groups
+
     worker.vllm_config.parallel_config.data_parallel_master_ip = "10.0.0.1"
     tp_group = object()
     dp_group = object()
@@ -169,15 +167,15 @@ def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
 
     with (
         patch("torch.distributed.set_debug_level"),
-        patch.object(worker, "parallel_group_clean_up"),
+        patch("vllm_ascend.snapshot.worker._parallel_group_cleanup"),
         patch.object(worker, "_init_worker_distributed_environment") as mock_init,
-        patch("vllm_ascend.worker.worker.set_current_vllm_config") as mock_ctx,
+        patch("vllm_ascend.snapshot.worker.set_current_vllm_config") as mock_ctx,
         patch.dict(
             "vllm_ascend.ops.fused_moe.moe_comm_method._MoECommMethods",
             {"fused_mc2": comm_method},
             clear=True,
         ),
-        patch("vllm_ascend.worker.worker.get_tp_group", return_value=tp_group),
+        patch("vllm_ascend.snapshot.worker.get_tp_group", return_value=tp_group),
         patch("vllm.distributed.parallel_state.get_dp_group", return_value=dp_group),
         patch("vllm.distributed.parallel_state.get_ep_group", return_value=ep_group),
         patch("vllm_ascend.distributed.parallel_state.get_mc2_group", return_value=mc2_group),
@@ -186,7 +184,7 @@ def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
         calls = []
         mock_init.side_effect = lambda: calls.append("init")
-        worker.rebuild_parallel_group_after_resume()
+        _rebuild_parallel_groups(worker)
 
     assert worker.distributed_init_method == "tcp://10.0.0.1:29502"
     assert worker.vllm_config.parallel_config._snapshot_data_parallel_port_list == [29502]
@@ -201,48 +199,57 @@ def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
 
 
 def test_update_worker_info_after_resume_updates_env_and_master_ip(worker, monkeypatch):
+    from vllm_ascend.snapshot.worker import _update_worker_info
+
     monkeypatch.delenv("HCCL_IF_IP", raising=False)
-    worker.update_worker_info_after_resume("10.0.0.8", "10.0.0.9")
+    _update_worker_info(worker, "10.0.0.8", "10.0.0.9")
 
     assert os.environ["HCCL_IF_IP"] == "10.0.0.8"
     assert worker.vllm_config.parallel_config.data_parallel_master_ip == "10.0.0.9"
 
 
 def test_rebuild_kv_transfer_engine_after_resume_delegates_to_connector(worker):
+    from vllm_ascend.snapshot.worker import _rebuild_kv_transfer_engine
+
     rebuild = MagicMock()
     connector_worker = SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild)
     kv_group = SimpleNamespace(connector_worker=connector_worker)
 
     with (
-        patch("vllm_ascend.worker.worker.has_kv_transfer_group", return_value=True),
-        patch("vllm_ascend.worker.worker.get_kv_transfer_group", return_value=kv_group),
+        patch("vllm_ascend.snapshot.worker.has_kv_transfer_group", return_value=True),
+        patch("vllm_ascend.snapshot.worker.get_kv_transfer_group", return_value=kv_group),
     ):
-        worker.rebuild_kv_transfer_engine_after_resume("10.0.0.8", None)
+        _rebuild_kv_transfer_engine(worker, "10.0.0.8", None)
 
     rebuild.assert_called_once_with("10.0.0.8", None)
 
 
 def test_rebuild_kv_transfer_engine_after_resume_delegates_to_hybrid_connector(worker):
+    from vllm_ascend.snapshot.worker import _rebuild_kv_transfer_engine
+
     worker.vllm_config.kv_transfer_config.kv_connector = "MooncakeHybridConnector"
     rebuild = MagicMock()
     connector_worker = SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild)
     kv_group = SimpleNamespace(connector_worker=connector_worker)
 
     with (
-        patch("vllm_ascend.worker.worker.has_kv_transfer_group", return_value=True),
-        patch("vllm_ascend.worker.worker.get_kv_transfer_group", return_value=kv_group),
+        patch("vllm_ascend.snapshot.worker.has_kv_transfer_group", return_value=True),
+        patch("vllm_ascend.snapshot.worker.get_kv_transfer_group", return_value=kv_group),
     ):
-        worker.rebuild_kv_transfer_engine_after_resume("10.0.0.8", None)
+        _rebuild_kv_transfer_engine(worker, "10.0.0.8", None)
 
     rebuild.assert_called_once_with("10.0.0.8", None)
 
 
 def test_recapture_graph_clears_and_recaptures(worker):
+    from vllm_ascend.snapshot.worker import _recapture_graph
+
     with (
         patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries") as mock_clear_entries,
         patch("vllm_ascend.compilation.acl_graph.clear_graph_params_for_recapture") as mock_clear_params,
+        patch("vllm_ascend.snapshot.worker._warm_up_atb"),
     ):
-        worker.recapture_graph()
+        _recapture_graph(worker)
 
     mock_clear_entries.assert_called_once()
     mock_clear_params.assert_called_once()
