@@ -161,7 +161,10 @@ def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
     ep_group = object()
     mc2_group = object()
     moe_config = SimpleNamespace(ep_size=2)
-    dispatcher = SimpleNamespace(refresh_hccl_group=MagicMock())
+    dispatcher = SimpleNamespace(
+        refresh_hccl_group=MagicMock(),
+        reset_snapshot_runtime_state=MagicMock(),
+    )
     comm_method = SimpleNamespace(moe_config=moe_config, token_dispatcher=dispatcher)
 
     with (
@@ -194,6 +197,7 @@ def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
     assert moe_config.ep_group is ep_group
     assert moe_config.mc2_group is mc2_group
     dispatcher.refresh_hccl_group.assert_called_once_with()
+    dispatcher.reset_snapshot_runtime_state.assert_called_once_with()
 
 
 def test_update_worker_info_after_resume_updates_env_and_master_ip(worker, monkeypatch):
