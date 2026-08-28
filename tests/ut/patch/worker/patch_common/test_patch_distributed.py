@@ -178,7 +178,7 @@ def _load_patch_distributed_module():
     vllm_ascend_device_communicators: Any = ModuleType("vllm_ascend.distributed.device_communicators")
     npu_communicator_module: Any = ModuleType("vllm_ascend.distributed.device_communicators.npu_communicator")
     vllm_ascend_snapshot: Any = ModuleType("vllm_ascend.snapshot")
-    snapshot_state_module: Any = ModuleType("vllm_ascend.snapshot.state")
+    hccl_teardown_module: Any = ModuleType("vllm_ascend.snapshot.hccl_teardown")
     utils_module: Any = ModuleType("vllm_ascend.utils")
 
     class FakeNPUCommunicator:
@@ -189,7 +189,7 @@ def _load_patch_distributed_module():
             communicator_instances.append(self)
 
     npu_communicator_module.NPUCommunicator = FakeNPUCommunicator
-    snapshot_state_module.is_snapshot_hccl_teardown_enabled = MagicMock(
+    hccl_teardown_module.is_snapshot_hccl_teardown_enabled = MagicMock(
         return_value=False
     )
     utils_module.create_hccl_pg_options = MagicMock(return_value=shared_hccl_options)
@@ -199,7 +199,7 @@ def _load_patch_distributed_module():
     vllm_ascend_module.distributed = vllm_ascend_distributed
     vllm_ascend_distributed.device_communicators = vllm_ascend_device_communicators
     vllm_ascend_module.snapshot = vllm_ascend_snapshot
-    vllm_ascend_snapshot.state = snapshot_state_module
+    vllm_ascend_snapshot.hccl_teardown = hccl_teardown_module
 
     modules = {
         "torch": torch_module,
@@ -216,7 +216,7 @@ def _load_patch_distributed_module():
         "vllm_ascend.distributed.device_communicators": (vllm_ascend_device_communicators),
         "vllm_ascend.distributed.device_communicators.npu_communicator": (npu_communicator_module),
         "vllm_ascend.snapshot": vllm_ascend_snapshot,
-        "vllm_ascend.snapshot.state": snapshot_state_module,
+        "vllm_ascend.snapshot.hccl_teardown": hccl_teardown_module,
         "vllm_ascend.utils": utils_module,
     }
 
@@ -242,7 +242,7 @@ def _load_patch_distributed_module():
             get_rank=get_rank,
             current_device=current_device,
             communicator_instances=communicator_instances,
-            snapshot_state_module=snapshot_state_module,
+            hccl_teardown_module=hccl_teardown_module,
             non_group_member=non_group_member,
             Backend=FakeBackend,
             vllm_distributed=vllm_distributed,
@@ -443,7 +443,7 @@ def test_destroy_aborts_hccl_only_during_snapshot_teardown(module_env):
     regular_group.destroy()
     abort.assert_not_called()
 
-    module_env.snapshot_state_module.is_snapshot_hccl_teardown_enabled.return_value = True
+    module_env.hccl_teardown_module.is_snapshot_hccl_teardown_enabled.return_value = True
     snapshot_group.destroy()
     abort.assert_called_once_with(snapshot_device_group)
 

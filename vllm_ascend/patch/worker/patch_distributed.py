@@ -26,7 +26,7 @@ from vllm.distributed.parallel_state import GroupCoordinator, _get_unique_name, 
 
 from vllm_ascend.distributed.device_communicators.npu_communicator import NPUCommunicator
 from vllm_ascend.patch.worker._hccl_pg_registry import HcclPgKey, HcclPgRegistry, make_hccl_pg_key
-from vllm_ascend.snapshot.state import is_snapshot_hccl_teardown_enabled
+from vllm_ascend.snapshot.hccl_teardown import is_snapshot_hccl_teardown_enabled
 from vllm_ascend.utils import create_hccl_pg_options
 
 _HCCL_PG_REGISTRY = HcclPgRegistry()
