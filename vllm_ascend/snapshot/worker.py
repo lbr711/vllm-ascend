@@ -17,6 +17,11 @@ from vllm.utils.network_utils import get_distributed_init_method
 
 from vllm_ascend.distributed.parallel_state import destroy_ascend_model_parallel
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
+from vllm_ascend.snapshot.model_runner import (
+    dump_model_runner,
+    restore_drafter_runtime_buffers,
+    restore_model_runner,
+)
 from vllm_ascend.snapshot.tensor_state import reset_runtime_tensor_state
 from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
 
@@ -63,7 +68,7 @@ def _run_timed_steps(worker, steps) -> None:
 
 def suspend_worker(worker, model_save_path: str | None = None) -> None:
     steps = (
-        ("dump_model", lambda: worker.model_runner.dump_model(path=model_save_path)),
+        ("dump_model", lambda: dump_model_runner(worker.model_runner, model_save_path)),
         ("gc.collect", gc.collect),
         ("snapshot_process_lock", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")),
         ("snapshot_process_backup", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),
@@ -90,7 +95,7 @@ def resume_worker(
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
         ),
         ("rebuild_parallel_group_after_resume", lambda: _rebuild_parallel_groups(worker)),
-        ("re_load_weights", lambda: worker.model_runner.restore_model(path=model_path)),
+        ("re_load_weights", lambda: restore_model_runner(worker.model_runner, model_path)),
         ("recapture_graph", lambda: _recapture_graph(worker)),
         (
             "rebuild_kv_transfer_engine_after_resume",
@@ -200,7 +205,7 @@ def _recapture_graph(worker) -> None:
     clear_all_aclgraph_entries()
     clear_graph_params_for_recapture()
     worker.model_runner.capture_model()
-    worker.model_runner.restore_drafter_runtime_buffers()
+    restore_drafter_runtime_buffers(worker.model_runner)
 
     if get_ascend_device_type() != AscendDeviceType.A5:
         _warm_up_atb()
