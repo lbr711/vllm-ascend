@@ -48,7 +48,6 @@ from vllm_ascend.ops.fused_moe.token_dispatcher import (
     TokenDispatcherWithMC2,
 )
 from vllm_ascend.quantization.quant_type import QuantType
-from vllm_ascend.snapshot.moe_trace import trace_tensor, trace_value
 
 _MoECommMethods: dict[MoECommType | None, MoECommMethod] = {}
 
@@ -153,17 +152,12 @@ class MoECommMethod(ABC):
         routed_topk_ids = fused_experts_input.topk_ids
         if fused_experts_input.routing.log2phy is not None:
             routed_topk_ids = fused_experts_input.routing.log2phy[routed_topk_ids]
-        trace_tensor("dispatch.routed_topk_ids", routed_topk_ids, exact=True)
 
         token_dispatch_input = build_token_dispatch_input(
             fused_experts_input=fused_experts_input,
             topk_ids=routed_topk_ids,
         )
         token_dispatch_output = self.token_dispatcher.token_dispatch(token_dispatch_input=token_dispatch_input)
-        trace_tensor("dispatch.hidden_states", token_dispatch_output.hidden_states)
-        trace_tensor("dispatch.dynamic_scale", token_dispatch_output.dynamic_scale)
-        trace_tensor("dispatch.group_list", token_dispatch_output.group_list, exact=True)
-        trace_value("dispatch.group_list_type", token_dispatch_output.group_list_type)
 
         mlp_compute_input = build_mlp_compute_input(
             fused_experts_input=fused_experts_input,
@@ -172,14 +166,12 @@ class MoECommMethod(ABC):
         )
 
         mlp_output, before_gmm2_evt = self._apply_mlp(mlp_compute_input)
-        trace_tensor("expert.mlp_output", mlp_output)
 
         before_combine_evt = torch.npu.current_stream().record_event()
         routed_out = self.token_dispatcher.token_combine(
             hidden_states=mlp_output,
             combine_metadata=token_dispatch_output.combine_metadata,
         )
-        trace_tensor("combine.routed_out", routed_out)
 
         return FusedExpertsResult(
             routed_out=routed_out,

@@ -34,7 +34,6 @@ from vllm_ascend.ops.activation import (
 )
 from vllm_ascend.ops.fused_moe.moe_runtime_args import MoEMlpComputeInput
 from vllm_ascend.quantization.quant_type import QuantType
-from vllm_ascend.snapshot.moe_trace import trace_tensor
 from vllm_ascend.utils import (
     dispose_tensor,
     enable_custom_op,
@@ -348,32 +347,20 @@ def quant_apply_mlp(
     if w1_scale_bias is None and w1_offset is None and is_mc2 and not is_gelu_activation:
         if _custom_gmm_swiglu_enabled(fusion, dynamic_eplb, activation) and not use_mxfp_quant:
             # gmm1: gate_up_proj & act_fn: swiglu
-            gmm1_group_list = cumsum_group_list(group_list, group_list_type, 0)
-            trace_tensor("expert.gmm1_input", hidden_states)
-            trace_tensor("expert.gmm1_weight_scale", w1_scale[0], exact=True)
-            trace_tensor("expert.gmm1_input_scale", pertoken_scale, exact=True)
-            trace_tensor("expert.gmm1_group_list", gmm1_group_list, exact=True)
             hidden_states, swiglu_out_scale, _ = torch.ops._C_ascend.grouped_matmul_swiglu_quant_weight_nz_tensor_list(
                 x=hidden_states,
                 weight=w1,
                 weight_scale=w1_scale,
                 x_scale=pertoken_scale,
-                group_list=gmm1_group_list,
+                group_list=cumsum_group_list(group_list, group_list_type, 0),
                 swiglu_limit=swiglu_limit,
             )
-            trace_tensor("expert.gmm1_output", hidden_states)
-            trace_tensor("expert.gmm1_output_scale", swiglu_out_scale, exact=True)
         elif use_gmm_swiglu_quant_fusion and activation != MoEActivation.SWIGLUSTEP:
             # gmm1: gate_up_proj & act_fn: swiglu
-            gmm1_group_list = cumsum_group_list(group_list, group_list_type, 0)
-            trace_tensor("expert.gmm1_input", hidden_states)
-            trace_tensor("expert.gmm1_weight_scale", w1_scale[0], exact=True)
-            trace_tensor("expert.gmm1_input_scale", pertoken_scale, exact=True)
-            trace_tensor("expert.gmm1_group_list", gmm1_group_list, exact=True)
             hidden_states, swiglu_out_scale, _ = DeviceOperator.npu_grouped_matmul_swiglu_quant(
                 x=hidden_states,
                 weight=_require_single_tensor_for_swiglu_quant(w1, name="w1"),
-                group_list=gmm1_group_list,
+                group_list=cumsum_group_list(group_list, group_list_type, 0),
                 weight_scale=_require_single_tensor_for_swiglu_quant(w1_scale, name="w1_scale"),
                 x_scale=pertoken_scale,
                 bias=None,
@@ -383,8 +370,6 @@ def quant_apply_mlp(
                 swiglu_limit=swiglu_limit,
                 mxfp_quant_dtype=mxfp_quant_dtype,
             )
-            trace_tensor("expert.gmm1_output", hidden_states)
-            trace_tensor("expert.gmm1_output_scale", swiglu_out_scale, exact=True)
             if quantized_hidden_states is not None:
                 dispose_tensor(quantized_hidden_states)
         elif activation == MoEActivation.SWIGLUSTEP:
@@ -469,7 +454,6 @@ def quant_apply_mlp(
             fallback_output_dtype=w2_scale[0].dtype if isinstance(w2_scale, list) else w2_scale.dtype,
             mxfp_quant_dtype=mxfp_quant_dtype,
         )
-        trace_tensor("expert.gmm2_output", hidden_states)
     elif w1_offset is not None:
         # gmm1: gate_up_proj
         hidden_states = torch_npu.npu_grouped_matmul(
