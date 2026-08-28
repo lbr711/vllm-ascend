@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import torch
@@ -74,6 +75,38 @@ class TestAscendW8A8DynamicLinearMethod(TestBase):
         self.assertEqual(layer.weight_scale.data.shape, (256,))
         self.assertEqual(layer.weight_offset.data.shape, (256,))
         self.assertEqual(layer.weight.data.shape, (256, 128))
+
+    def test_snapshot_persists_dsa_cp_split_weights(self):
+        layer = nn.Module()
+        layer.prefix = "model.layers.0.self_attn.wq_b"
+        layer.register_parameter(
+            "weight",
+            nn.Parameter(torch.ones((65536, 2), dtype=torch.int8), requires_grad=False),
+        )
+        layer.register_parameter(
+            "weight_scale",
+            nn.Parameter(torch.ones((65536, 1), dtype=torch.bfloat16), requires_grad=False),
+        )
+        layer.register_parameter(
+            "weight_offset",
+            nn.Parameter(torch.zeros((65536, 1), dtype=torch.bfloat16), requires_grad=False),
+        )
+
+        with (
+            patch("vllm_ascend.quantization.methods.w8a8_dynamic.enable_dsa_cp", return_value=True),
+            patch("vllm_ascend.quantization.methods.w8a8_dynamic.maybe_trans_nz", side_effect=lambda x: x),
+            patch(
+                "vllm_ascend.quantization.methods.w8a8_dynamic.get_current_vllm_config",
+                return_value=SimpleNamespace(snapshot_config=object()),
+            ),
+        ):
+            self.method.process_weights_after_loading(layer)
+
+        state = layer.state_dict()
+        self.assertIn("weight_1", state)
+        self.assertIn("weight_2", state)
+        self.assertIn("weight_1_scale", state)
+        self.assertIn("weight_2_scale", state)
 
 
 class TestAscendW8A8DynamicLinearMethodWithNpu(TestBase):

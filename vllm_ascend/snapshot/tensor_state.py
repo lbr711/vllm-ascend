@@ -14,6 +14,13 @@ class SnapshotTensorStateOwner(Protocol):
     def reset_snapshot_runtime_state(self) -> None: ...
 
 
+def persist_tensor_attributes(module: nn.Module, names: Iterable[str]) -> None:
+    for name in names:
+        tensor = getattr(module, name)
+        delattr(module, name)
+        module.register_buffer(name, tensor)
+
+
 def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
     seen_ids: set[int] = set()
     for name, module in model.named_modules():

@@ -29,6 +29,7 @@ from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.ops.fused_moe.experts_selector import select_experts, zero_experts_compute
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.snapshot.moe_trace import trace_tensor, trace_value
+from vllm_ascend.snapshot.tensor_state import persist_tensor_attributes
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, enable_dsa_cp, maybe_trans_nz
 
 from .base import AscendLinearScheme, AscendMoEScheme, QuantType, get_moe_num_logical_experts
@@ -140,6 +141,11 @@ class AscendW8A8DynamicLinearMethod(AscendLinearScheme):
             layer.weight_2_scale_fp32 = layer.weight_2_scale.to(torch.float32)
             layer.weight_1_offset = layer.weight_offset.data[:chunk_size].flatten().contiguous()
             layer.weight_2_offset = layer.weight_offset.data[chunk_size:].flatten().contiguous()
+            if get_current_vllm_config().snapshot_config is not None:
+                persist_tensor_attributes(
+                    layer,
+                    ("weight_1", "weight_2", "weight_1_scale", "weight_2_scale"),
+                )
             del layer.weight
             del layer.weight_scale
             del layer.weight_offset
