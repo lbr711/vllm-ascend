@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("torch_npu", types.ModuleType("torch_npu"))
 
-from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot  # noqa: E402
-from vllm_ascend.snapshot.hccl_teardown import (  # noqa: E402
+from vllm_ascend.snapshot.distributed import (  # noqa: E402
+    cleanup_dist_env_for_snapshot,
     is_snapshot_hccl_teardown_enabled,
     snapshot_hccl_teardown,
 )
