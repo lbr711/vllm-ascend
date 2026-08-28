@@ -21,6 +21,12 @@ def persist_tensor_attributes(module: nn.Module, names: Iterable[str]) -> None:
         module.register_buffer(name, tensor)
 
 
+def persist_tensor_lists(module: nn.Module, names: Iterable[str]) -> None:
+    for name in names:
+        for index, tensor in enumerate(getattr(module, name)):
+            module.register_buffer(f"_snapshot_{name}_{index}", tensor)
+
+
 def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
     seen_ids: set[int] = set()
     for name, module in model.named_modules():
