@@ -51,13 +51,36 @@ def _is_nz_int32_packed_weight(tensor: torch.Tensor) -> bool:
 
 
 def _copy_into_nz_int32_weight(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
-    """ND(cpu) -> ND(npu temp) -> NZ(temp) -> write back into existing NZ dst storage."""
-    # Allocate a fresh ND buffer; do not use empty_like(dst) which may inherit NZ format.
-    tmp = torch.empty(dst.shape, dtype=dst.dtype, device=dst.device)
-    tmp.copy_(cpu_tensor)
+    """Write CPU int32-packed weights into an existing NZ int32 Parameter.
+
+    Cold-start does NZ cast on int8, then view(int32). TransData cannot NZ-cast
+    int32 directly, so restore mirrors that order on a temporary NPU buffer and
+    writes back through an int8 view of dst to preserve the original storage.
+    """
+    cpu = cpu_tensor.detach().contiguous()
+    if cpu.dtype != torch.int32:
+        raise RuntimeError(
+            f"NZ int32 packed weight restore expects int32 cpu tensor, got {cpu.dtype}"
+        )
+    if cpu.shape != dst.shape:
+        raise RuntimeError(
+            f"NZ int32 packed weight shape mismatch: cpu {tuple(cpu.shape)} vs dst {tuple(dst.shape)}"
+        )
+
+    # int32 packed storage <-> int8 layout used by npu_format_cast (last dim * 4).
+    cpu_i8 = cpu.view(torch.int8)
+    tmp = torch.empty(cpu_i8.shape, dtype=torch.int8, device=dst.device)
+    tmp.copy_(cpu_i8)
     tmp = torch_npu.npu_format_cast(tmp, ACL_FORMAT_FRACTAL_NZ)
-    dst.copy_(tmp)
-    del tmp
+
+    dst_i8 = dst.view(torch.int8)
+    if dst_i8.shape != tmp.shape:
+        raise RuntimeError(
+            f"NZ int32 packed weight int8-view shape mismatch: "
+            f"dst_i8 {tuple(dst_i8.shape)} vs tmp {tuple(tmp.shape)}"
+        )
+    dst_i8.copy_(tmp)
+    del tmp, cpu_i8, dst_i8
 
 
 def _restore_tensor(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
