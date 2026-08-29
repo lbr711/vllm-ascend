@@ -7,8 +7,6 @@ import platform
 import time
 from ctypes import CDLL, c_int, c_void_p
 
-import torch
-import torch_npu
 from vllm.config import set_current_vllm_config
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.parallel_state import get_tp_group
@@ -19,11 +17,9 @@ from vllm_ascend.distributed.parallel_state import destroy_ascend_model_parallel
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
 from vllm_ascend.snapshot.model_restore import (
     dump_model_runner,
-    restore_drafter_runtime_buffers,
     restore_model_runner,
 )
 from vllm_ascend.snapshot.tensor_state import reset_runtime_tensor_state
-from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
 
 _ACL_RT_LIB: CDLL | None = None
 
@@ -205,14 +201,3 @@ def _recapture_graph(worker) -> None:
     clear_all_aclgraph_entries()
     clear_graph_params_for_recapture()
     worker.model_runner.capture_model()
-    restore_drafter_runtime_buffers(worker.model_runner)
-
-    if get_ascend_device_type() != AscendDeviceType.A5:
-        _warm_up_atb()
-
-
-def _warm_up_atb() -> None:
-    x = torch.rand((2, 4), dtype=torch.float16).npu()
-    weight = torch.rand((2, 4), dtype=torch.float16).npu()
-    c = torch.rand((4, 4), dtype=torch.float32).npu()
-    torch_npu._npu_matmul_add_fp32(x, weight, c)
