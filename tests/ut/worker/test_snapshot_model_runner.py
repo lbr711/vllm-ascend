@@ -147,11 +147,17 @@ def test_reload_derived_weights_propagates_failure():
         )
 
 
-def test_reset_block_tables_delegates_to_owner():
+def test_reset_block_tables_clears_cpu_and_device_buffers():
     runner = SimpleNamespace()
-    block_table = SimpleNamespace(clear=Mock(), block_tables=[object(), object()])
+    buffers = [
+        SimpleNamespace(gpu=torch.ones(2), cpu=torch.ones(2)),
+        SimpleNamespace(gpu=torch.ones(3), cpu=torch.ones(3)),
+    ]
+    block_table = SimpleNamespace(block_tables=[SimpleNamespace(block_table=buf) for buf in buffers])
     runner.input_batch = SimpleNamespace(block_table=block_table)
 
     _reset_block_table_device_buffers(runner)
 
-    block_table.clear.assert_called_once_with()
+    for buf in buffers:
+        assert torch.count_nonzero(buf.gpu) == 0
+        assert torch.count_nonzero(buf.cpu) == 0

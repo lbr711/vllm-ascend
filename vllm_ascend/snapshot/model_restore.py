@@ -142,9 +142,12 @@ def _reset_block_table_device_buffers(runner) -> None:
     # Clear both CPU source rows and device rows. Graph recapture can otherwise
     # copy snapshot-time block ids back to the device before a real request
     # repopulates the active rows.
-    block_table = runner.input_batch.block_table
-    block_table.clear()
+    block_tables = runner.input_batch.block_table.block_tables
+    for block_table in block_tables:
+        buf = block_table.block_table
+        buf.gpu.zero_()
+        buf.cpu.zero_()
     logger.info(
         "[restore model] zeroed %d block-table device tensor(s)",
-        len(block_table.block_tables),
+        len(block_tables),
     )
