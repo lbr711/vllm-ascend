@@ -895,6 +895,12 @@ class NPUWorker(WorkerBase):
             ),
         )
 
+    def _warm_up_atb(self):
+        x = torch.rand((2, 4), dtype=torch.float16).npu()
+        weight = torch.rand((2, 4), dtype=torch.float16).npu()
+        c = torch.rand((4, 4), dtype=torch.float32).npu()
+        torch_npu._npu_matmul_add_fp32(x, weight, c)
+
     def get_model(self) -> nn.Module:
         return self.model_runner.get_model()
 

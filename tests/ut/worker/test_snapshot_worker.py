@@ -249,12 +249,9 @@ def test_recapture_graph_clears_and_recaptures(worker):
     with (
         patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries") as mock_clear_entries,
         patch("vllm_ascend.compilation.acl_graph.clear_graph_params_for_recapture") as mock_clear_params,
-        patch("vllm_ascend.snapshot.worker_lifecycle.restore_drafter_runtime_buffers") as restore_drafter,
-        patch("vllm_ascend.snapshot.worker_lifecycle._warm_up_atb"),
     ):
         _recapture_graph(worker)
 
     mock_clear_entries.assert_called_once()
     mock_clear_params.assert_called_once()
     worker.model_runner.capture_model.assert_called_once()
-    restore_drafter.assert_called_once_with(worker.model_runner)
