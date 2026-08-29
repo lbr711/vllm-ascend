@@ -98,6 +98,20 @@ class TestBlockTableComputeSlotMapping(TestBase):
         self.assertEqual(block_table.slot_mapping.cpu.numel(), 128)
         self.assertEqual(block_table.slot_mapping.cpu[: req_indices.size].numel(), 110)
 
+    def test_clear_resets_cpu_and_device_block_tables(self):
+        block_table = self.create_block_table(
+            dcp_world_size=1,
+            dcp_rank=0,
+            cp_kv_cache_interleave_size=1,
+        )
+        block_table.block_table.cpu.fill_(1)
+        block_table.block_table.gpu.fill_(2)
+
+        block_table.clear()
+
+        self.assertEqual(torch.count_nonzero(block_table.block_table.cpu), 0)
+        self.assertEqual(torch.count_nonzero(block_table.block_table.gpu), 0)
+
     def setup_block_table_data(self, block_table, num_reqs=2):
         """Helper method to populate block table with test data"""
         # Add block IDs for each request
