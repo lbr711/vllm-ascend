@@ -849,7 +849,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         if not self._rebind_absorbed_weight_buffers():
             raise RuntimeError(f"SFA layer {self.layer_name}: absorbed weight buffers are missing after restore")
 
-        if self.enable_sfa_prolog_v3:
+        if self.preprocess_type == PreprocessType.PROLOG_V3:
             raise RuntimeError("SFA prolog-v3 snapshot restore is not supported")
 
         if self.enable_mlapo:
