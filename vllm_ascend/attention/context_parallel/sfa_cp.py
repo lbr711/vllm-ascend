@@ -5,6 +5,7 @@ from typing import NamedTuple, TypeVar
 import torch
 import torch.distributed as dist
 from vllm.config import VllmConfig
+from vllm.logger import logger
 from vllm.utils.math_utils import cdiv
 from vllm.v1.kv_cache_interface import AttentionSpec
 
@@ -23,6 +24,7 @@ from vllm_ascend.attention.sfa_v1 import (
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata, split_decodes_and_prefills
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.distributed.utils import all_gather_async
+from vllm_ascend.utils import is_restore
 
 M = TypeVar("M", bound=AscendSFAMetadata)
 
@@ -227,14 +229,56 @@ class AscendSFADCPMetadataBuilder(
         if num_actual_tokens == 0:
             return slot_mapping_replicated_view
 
+        trace_repeat_interleave = is_restore()
+        if trace_repeat_interleave:
+            query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu[: num_reqs + 1]
+            query_lens_cpu = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
+            logger.info(
+                "[snapshot] [sfa-dcp] rank %s: before RepeatInterleave "
+                "num_reqs=%s num_actual_tokens=%s num_input_tokens=%s "
+                "query_start_loc_cpu=%s query_lens_cpu=%s query_lens_cpu_sum=%s",
+                self.dcp_rank,
+                num_reqs,
+                num_actual_tokens,
+                num_input_tokens,
+                query_start_loc_cpu.tolist(),
+                query_lens_cpu.tolist(),
+                int(query_lens_cpu.sum().item()),
+            )
+            torch.npu.synchronize()
+
         query_lens = (
             common_attn_metadata.query_start_loc[1 : num_reqs + 1] - common_attn_metadata.query_start_loc[:num_reqs]
         )
+        req_values = torch.arange(num_reqs, dtype=torch.int32, device=self.device)
+        if trace_repeat_interleave:
+            torch.npu.synchronize()
+            query_start_loc_device = common_attn_metadata.query_start_loc[: num_reqs + 1].cpu()
+            query_lens_device = query_lens.cpu()
+            logger.info(
+                "[snapshot] [sfa-dcp] rank %s: RepeatInterleave inputs "
+                "query_start_loc_device=%s query_lens_device=%s "
+                "query_lens_device_sum=%s output_size=%s contract_valid=%s",
+                self.dcp_rank,
+                query_start_loc_device.tolist(),
+                query_lens_device.tolist(),
+                int(query_lens_device.sum().item()),
+                num_input_tokens,
+                bool(torch.all(query_lens_device >= 0).item())
+                and int(query_lens_device.sum().item()) == num_input_tokens,
+            )
         req_indices = torch.repeat_interleave(
-            torch.arange(num_reqs, dtype=torch.int32, device=self.device),
+            req_values,
             query_lens.to(device=self.device),
             output_size=num_input_tokens,
         )[:num_actual_tokens]
+        if trace_repeat_interleave:
+            torch.npu.synchronize()
+            logger.info(
+                "[snapshot] [sfa-dcp] rank %s: RepeatInterleave completed output_shape=%s",
+                self.dcp_rank,
+                tuple(req_indices.shape),
+            )
         if req_indices.numel() == 0:
             return slot_mapping_replicated_view
 
