@@ -4,6 +4,7 @@ import ctypes
 import gc
 import os
 import time
+from typing import Protocol
 
 import torch
 import torch.nn as nn
@@ -43,40 +44,60 @@ def dump_state_dict(model: nn.Module, path: str) -> None:
     logger.info("[dump model] save model ckpt to %s, elapse %.4f s", path, time.time() - start)
 
 
-def _is_w4a8_v1_nz_packed_weight(tensor: torch.Tensor) -> bool:
-    """Match the packed layout used by msModelSlim W4A8_DYNAMIC v1.0.0.
+class _TensorRestoreStrategy(Protocol):
+    def supports(self, tensor: torch.Tensor) -> bool: ...
 
-    That format casts the pre-packed int8 weight to FRACTAL_NZ and then views
-    the same storage as int32. Legacy W4A8 runtime packing and W4A8_MXFP use
-    different representations and are not covered by this restore path.
-    """
-    return (
-        tensor.dtype == torch.int32
-        and tensor.device.type == "npu"
-        and int(torch_npu.get_npu_format(tensor)) == ACL_FORMAT_FRACTAL_NZ
-    )
+    def restore(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None: ...
 
 
-def _copy_into_w4a8_v1_nz_packed_weight(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
-    """Restore the W4A8_DYNAMIC v1.0.0 int8-NZ -> int32-view representation."""
-    if cpu_tensor.dtype != torch.int32:
-        raise RuntimeError(f"W4A8 v1 NZ weight restore expects int32 cpu tensor, got {cpu_tensor.dtype}")
-    if cpu_tensor.shape != dst.shape:
-        raise RuntimeError(f"W4A8 v1 NZ weight shape mismatch: cpu {tuple(cpu_tensor.shape)} vs dst {tuple(dst.shape)}")
+class _W4A8V1NZPackedRestoreStrategy:
+    """Restore the msModelSlim W4A8_DYNAMIC v1.0.0 packed layout."""
 
-    # Cold start casts int8 to NZ before viewing the storage as packed int32.
-    cpu_i8 = cpu_tensor.contiguous().view(torch.int8)
-    tmp = torch.empty(cpu_i8.shape, dtype=torch.int8, device=dst.device)
-    tmp.copy_(cpu_i8)
-    tmp = torch_npu.npu_format_cast(tmp, ACL_FORMAT_FRACTAL_NZ)
-    dst.view(torch.int8).copy_(tmp)
+    def supports(self, tensor: torch.Tensor) -> bool:
+        # This format casts pre-packed int8 weights to FRACTAL_NZ and then
+        # views the same storage as int32. Legacy W4A8 runtime packing and
+        # W4A8_MXFP use different representations.
+        return (
+            tensor.dtype == torch.int32
+            and tensor.device.type == "npu"
+            and int(torch_npu.get_npu_format(tensor)) == ACL_FORMAT_FRACTAL_NZ
+        )
+
+    def restore(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+        if cpu_tensor.dtype != torch.int32:
+            raise RuntimeError(f"W4A8 v1 NZ weight restore expects int32 cpu tensor, got {cpu_tensor.dtype}")
+        if cpu_tensor.shape != dst.shape:
+            raise RuntimeError(
+                f"W4A8 v1 NZ weight shape mismatch: cpu {tuple(cpu_tensor.shape)} vs dst {tuple(dst.shape)}"
+            )
+
+        cpu_i8 = cpu_tensor.contiguous().view(torch.int8)
+        tmp = torch.empty(cpu_i8.shape, dtype=torch.int8, device=dst.device)
+        tmp.copy_(cpu_i8)
+        tmp = torch_npu.npu_format_cast(tmp, ACL_FORMAT_FRACTAL_NZ)
+        dst.view(torch.int8).copy_(tmp)
+
+
+class _DirectCopyRestoreStrategy:
+    def supports(self, tensor: torch.Tensor) -> bool:
+        return True
+
+    def restore(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+        dst.copy_(cpu_tensor)
+
+
+_TENSOR_RESTORE_STRATEGIES: tuple[_TensorRestoreStrategy, ...] = (
+    _W4A8V1NZPackedRestoreStrategy(),
+    _DirectCopyRestoreStrategy(),
+)
 
 
 def _restore_tensor(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
-    if _is_w4a8_v1_nz_packed_weight(dst):
-        _copy_into_w4a8_v1_nz_packed_weight(dst, cpu_tensor)
-    else:
-        dst.copy_(cpu_tensor)
+    for strategy in _TENSOR_RESTORE_STRATEGIES:
+        if strategy.supports(dst):
+            strategy.restore(dst, cpu_tensor)
+            return
+    raise RuntimeError(f"No restore strategy for tensor with dtype={dst.dtype}, device={dst.device}")
 
 
 def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
