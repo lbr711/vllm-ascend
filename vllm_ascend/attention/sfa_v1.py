@@ -882,6 +882,17 @@ class AscendSFAImpl(MLAAttentionImpl):
     def reset_snapshot_runtime_state(self) -> None:
         if self.topk_indices_buffer is not None:
             self.topk_indices_buffer.fill_(-1)
+        if self.preprocess_type == PreprocessType.PROLOG_V3 and self.enable_sparse_sfa_c8:
+            self.sfa_qsfa_k_nope_clip_alpha = torch.ones(
+                1,
+                dtype=torch.float32,
+                device=self.weight_dq.device,
+            )
+            self.sfa_qsfa_kr_cache_dummy = torch.empty(
+                0,
+                dtype=torch.bfloat16,
+                device=self.weight_dq.device,
+            )
 
     def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
         """Rebind or rebuild decode weights derived outside ``state_dict``."""
@@ -890,17 +901,6 @@ class AscendSFAImpl(MLAAttentionImpl):
 
         if self.preprocess_type == PreprocessType.PROLOG_V3:
             self._rebind_persistent_prolog_v3_buffers()
-            if self.enable_sparse_sfa_c8:
-                self.sfa_qsfa_k_nope_clip_alpha = torch.ones(
-                    1,
-                    dtype=torch.float32,
-                    device=self.weight_dq.device,
-                )
-                self.sfa_qsfa_kr_cache_dummy = torch.empty(
-                    0,
-                    dtype=torch.bfloat16,
-                    device=self.weight_dq.device,
-                )
             return
 
         if self.preprocess_type == PreprocessType.MLAPO:
