@@ -756,6 +756,8 @@ class AscendSFAImpl(MLAAttentionImpl):
 
         if self.vllm_config.snapshot_config is not None:
             self._persist_absorbed_weights()
+            if self.preprocess_type == PreprocessType.PROLOG_V3:
+                self._persist_prolog_v3_derived()
 
         if self.has_indexer and self.enable_sparse_li_c8 and AscendSFAImpl.q_hadamard is None:
             AscendSFAImpl.q_hadamard = torch.tensor(scipy.linalg.hadamard(128), dtype=torch.bfloat16, device="npu") / (
@@ -816,6 +818,43 @@ class AscendSFAImpl(MLAAttentionImpl):
         ("q_proj", "qb_qt_bias", "mlapo_qb_qt_bias"),
     )
 
+    _PROLOG_V3_COMMON_BUFFERS = (
+        ("weight_dq", "prolog_v3_weight_dq"),
+        ("weight_dkv_kr", "prolog_v3_weight_dkv_kr"),
+        ("weight_uq_qr", "prolog_v3_weight_uq_qr"),
+    )
+    _PROLOG_V3_DYNAMIC_BUFFERS = (
+        ("dequant_scale_w_dq", "prolog_v3_dequant_scale_w_dq"),
+        ("dequant_scale_w_dkv_kr", "prolog_v3_dequant_scale_w_dkv_kr"),
+        ("dequant_scale_w_uq_qr", "prolog_v3_dequant_scale_w_uq_qr"),
+    )
+    _PROLOG_V3_MXFP_BUFFERS = (
+        ("weight_dq_scale", "prolog_v3_weight_dq_scale"),
+        ("weight_dkv_kr_scale", "prolog_v3_weight_dkv_kr_scale"),
+        ("weight_uq_qr_scale", "prolog_v3_weight_uq_qr_scale"),
+    )
+
+    def _prolog_v3_buffer_specs(self) -> tuple[tuple[str, str], ...]:
+        buffers = self._PROLOG_V3_COMMON_BUFFERS
+        if self._quant_type is AscendW8A8DynamicLinearMethod:
+            buffers += self._PROLOG_V3_DYNAMIC_BUFFERS
+        elif self._quant_type is AscendW8A8MXFP8DynamicLinearMethod:
+            buffers += self._PROLOG_V3_MXFP_BUFFERS
+        return buffers
+
+    def _persist_prolog_v3_derived(self) -> None:
+        for attr_name, buf_name in self._prolog_v3_buffer_specs():
+            tensor = getattr(self, attr_name)
+            setattr(self, attr_name, set_persistent_tensor(self.q_proj, buf_name, tensor))
+
+    def _rebind_persistent_prolog_v3_buffers(self) -> None:
+        for attr_name, buf_name in self._prolog_v3_buffer_specs():
+            if buf_name not in self.q_proj._buffers:
+                raise RuntimeError(
+                    f"SFA layer {self.layer_name}: missing persistent PROLOG_V3 buffer {buf_name}"
+                )
+            setattr(self, attr_name, self.q_proj._buffers[buf_name])
+
     def _rebind_persistent_mlapo_buffers(self) -> None:
         for host_name, attr_name, buf_name in self._MLAPO_PERSISTED_BUFFERS:
             host = getattr(self, host_name)
@@ -850,7 +889,19 @@ class AscendSFAImpl(MLAAttentionImpl):
             raise RuntimeError(f"SFA layer {self.layer_name}: absorbed weight buffers are missing after restore")
 
         if self.preprocess_type == PreprocessType.PROLOG_V3:
-            raise RuntimeError("SFA prolog-v3 snapshot restore is not supported")
+            self._rebind_persistent_prolog_v3_buffers()
+            if self.enable_sparse_sfa_c8:
+                self.sfa_qsfa_k_nope_clip_alpha = torch.ones(
+                    1,
+                    dtype=torch.float32,
+                    device=self.weight_dq.device,
+                )
+                self.sfa_qsfa_kr_cache_dummy = torch.empty(
+                    0,
+                    dtype=torch.bfloat16,
+                    device=self.weight_dq.device,
+                )
+            return
 
         if self.preprocess_type == PreprocessType.MLAPO:
             if get_ascend_device_type() == AscendDeviceType.A5:

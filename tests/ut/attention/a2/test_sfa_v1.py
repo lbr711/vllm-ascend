@@ -329,6 +329,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.W_UV = torch.randn(2, 3)
         impl.W_UK_T = torch.randn(2, 4)
         impl.preprocess_type = preprocess_type
+        impl.layer_name = "model.layers.0.self_attn"
         impl._persist_absorbed_weights()
         return impl
 
@@ -388,10 +389,31 @@ class TestAscendSFASnapshotRestore(TestBase):
 
         impl._process_weights_for_fused_mlapo_a5.assert_called_once_with(torch.bfloat16)
 
-    def test_prolog_v3_restore_is_rejected(self):
+    def test_prolog_v3_restore_rebinds_persistent_derived_weights(self):
         impl = self._make_impl_with_absorbed_weights(PreprocessType.PROLOG_V3)
+        impl._quant_type = AscendW8A8DynamicLinearMethod
+        impl.enable_sparse_sfa_c8 = False
+        names = impl._PROLOG_V3_COMMON_BUFFERS + impl._PROLOG_V3_DYNAMIC_BUFFERS
+        for attr_name, _ in names:
+            setattr(impl, attr_name, torch.randn(2, 2))
+        impl._persist_prolog_v3_derived()
+        state_dict = impl.q_proj.state_dict()
+        self.assertTrue(all(buf_name in state_dict for _, buf_name in names))
+        expected = {attr_name: getattr(impl, attr_name) for attr_name, _ in names}
+        for attr_name, _ in names:
+            setattr(impl, attr_name, torch.empty(0))
 
-        with self.assertRaisesRegex(RuntimeError, "prolog-v3 snapshot restore is not supported"):
+        impl.restore_snapshot_derived_state(torch.bfloat16)
+
+        for attr_name, _ in names:
+            self.assertIs(getattr(impl, attr_name), expected[attr_name])
+
+    def test_prolog_v3_restore_requires_persistent_derived_weights(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.PROLOG_V3)
+        impl._quant_type = None
+        impl.enable_sparse_sfa_c8 = False
+
+        with self.assertRaisesRegex(RuntimeError, "missing persistent PROLOG_V3 buffer"):
             impl.restore_snapshot_derived_state(torch.bfloat16)
 
     def test_metadata_builder_reset_clears_reusable_length_buffers(self):
