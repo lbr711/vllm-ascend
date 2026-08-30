@@ -1,16 +1,16 @@
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 import torch
 
-from vllm_ascend.snapshot.model_restore import (
+from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_table_device_buffers,
     _reset_runtime_tensor_states,
     dump_model_runner,
     restore_model_runner,
 )
-from vllm_ascend.snapshot.tensor_state import restore_derived_tensor_state
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_derived_tensor_state
 
 
 class _TopKHolder(torch.nn.Module):
@@ -60,8 +60,8 @@ def test_dump_model_runner_dumps_target_and_drafter(tmp_path):
     runner = _make_runner(torch.nn.Module(), torch.nn.Module())
 
     with (
-        patch("vllm_ascend.snapshot.model_restore.get_tp_group") as tp_group,
-        patch("vllm_ascend.snapshot.model_restore.dump_state_dict") as dump,
+        patch("vllm_ascend.snapshot.model_runtime.restore.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runtime.restore.dump_state_dict") as dump,
     ):
         tp_group.return_value.rank_in_group = 3
         dump_model_runner(runner, str(tmp_path))
@@ -77,14 +77,14 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
     runner = _make_runner(model, drafter_model)
 
     with (
-        patch("vllm_ascend.snapshot.model_restore.get_tp_group") as tp_group,
-        patch("vllm_ascend.snapshot.model_restore._restore_one_model") as restore_one,
-        patch("vllm_ascend.snapshot.model_restore.restore_global_tensor_state"),
-        patch("vllm_ascend.snapshot.model_restore._clear_spec_decode_carryover"),
-        patch("vllm_ascend.snapshot.model_restore.restore_drafter_runtime_buffers"),
-        patch("vllm_ascend.snapshot.model_restore._reset_attention_builder_runtime_states"),
-        patch("vllm_ascend.snapshot.model_restore._reset_runtime_tensor_states"),
-        patch("vllm_ascend.snapshot.model_restore._reset_block_table_device_buffers"),
+        patch("vllm_ascend.snapshot.model_runtime.restore.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runtime.restore._restore_one_model") as restore_one,
+        patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state"),
+        patch("vllm_ascend.snapshot.model_runtime.restore._clear_spec_decode_carryover"),
+        patch("vllm_ascend.snapshot.model_runtime.restore.restore_drafter_runtime_buffers"),
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builder_runtime_states"),
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runtime_tensor_states"),
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_block_table_device_buffers"),
     ):
         tp_group.return_value.rank_in_group = 3
         restore_model_runner(runner, str(tmp_path))

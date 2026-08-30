@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from typing import Protocol
+
+import torch
+import torch_npu
+
+from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
+
+
+class _TensorCopyStrategy(Protocol):
+    def supports(self, tensor: torch.Tensor) -> bool: ...
+
+    def copy(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None: ...
+
+
+class _W4A8V1NZPackedCopyStrategy:
+    """Copy the msModelSlim W4A8_DYNAMIC v1.0.0 packed layout."""
+
+    def supports(self, tensor: torch.Tensor) -> bool:
+        # This format casts pre-packed int8 weights to FRACTAL_NZ and then
+        # views the same storage as int32. Legacy W4A8 runtime packing and
+        # W4A8_MXFP use different representations.
+        return (
+            tensor.dtype == torch.int32
+            and tensor.device.type == "npu"
+            and int(torch_npu.get_npu_format(tensor)) == ACL_FORMAT_FRACTAL_NZ
+        )
+
+    def copy(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+        if cpu_tensor.dtype != torch.int32:
+            raise RuntimeError(f"W4A8 v1 NZ weight restore expects int32 cpu tensor, got {cpu_tensor.dtype}")
+        if cpu_tensor.shape != dst.shape:
+            raise RuntimeError(
+                f"W4A8 v1 NZ weight shape mismatch: cpu {tuple(cpu_tensor.shape)} vs dst {tuple(dst.shape)}"
+            )
+
+        cpu_i8 = cpu_tensor.contiguous().view(torch.int8)
+        tmp = torch.empty(cpu_i8.shape, dtype=torch.int8, device=dst.device)
+        tmp.copy_(cpu_i8)
+        tmp = torch_npu.npu_format_cast(tmp, ACL_FORMAT_FRACTAL_NZ)
+        dst.view(torch.int8).copy_(tmp)
+
+
+class _DirectCopyStrategy:
+    def supports(self, tensor: torch.Tensor) -> bool:
+        return True
+
+    def copy(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+        dst.copy_(cpu_tensor)
+
+
+_TENSOR_COPY_STRATEGIES: tuple[_TensorCopyStrategy, ...] = (
+    _W4A8V1NZPackedCopyStrategy(),
+    _DirectCopyStrategy(),
+)
+
+
+def copy_checkpoint_tensor(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+    for strategy in _TENSOR_COPY_STRATEGIES:
+        if strategy.supports(dst):
+            strategy.copy(dst, cpu_tensor)
+            return
+    raise RuntimeError(f"No copy strategy for tensor with dtype={dst.dtype}, device={dst.device}")

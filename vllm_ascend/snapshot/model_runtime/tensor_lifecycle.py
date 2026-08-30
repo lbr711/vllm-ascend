@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+"""Persistent, derived, and transient tensor lifecycle helpers."""
+
 from collections.abc import Iterable, Iterator
 
 import torch
