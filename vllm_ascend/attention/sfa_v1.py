@@ -55,7 +55,7 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8LinearMethod,
     AscendW8A8MXFP8DynamicLinearMethod,
 )
-from vllm_ascend.snapshot.tensor_state import set_persistent_tensor
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,

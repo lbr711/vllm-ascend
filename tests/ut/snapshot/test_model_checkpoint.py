@@ -5,10 +5,8 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from vllm_ascend.snapshot.model_state import (
-    _W4A8V1NZPackedRestoreStrategy,
-    restore_state_dict,
-)
+from vllm_ascend.snapshot.model_runtime.checkpoint import restore_state_dict
+from vllm_ascend.snapshot.model_runtime.h2d_copy import _W4A8V1NZPackedCopyStrategy
 
 
 class _Model(torch.nn.Module):
@@ -36,14 +34,14 @@ def test_restore_state_dict_copies_parameters_and_buffers(tmp_path) -> None:
 
 
 @patch(
-    "vllm_ascend.snapshot.model_state.torch_npu.npu_format_cast",
+    "vllm_ascend.snapshot.model_runtime.h2d_copy.torch_npu.npu_format_cast",
     side_effect=lambda tensor, _: tensor,
 )
-def test_w4a8_v1_nz_packed_strategy_restores_bytes(mock_format_cast) -> None:
+def test_w4a8_v1_nz_packed_strategy_copies_bytes(mock_format_cast) -> None:
     src = torch.tensor([[0x01020304, -1]], dtype=torch.int32)
     dst = torch.zeros_like(src)
 
-    _W4A8V1NZPackedRestoreStrategy().restore(dst, src)
+    _W4A8V1NZPackedCopyStrategy().copy(dst, src)
 
     torch.testing.assert_close(dst, src)
     mock_format_cast.assert_called_once()
@@ -51,9 +49,9 @@ def test_w4a8_v1_nz_packed_strategy_restores_bytes(mock_format_cast) -> None:
 
 def test_w4a8_v1_nz_packed_strategy_rejects_mismatched_state() -> None:
     dst = torch.zeros((1, 2), dtype=torch.int32)
-    strategy = _W4A8V1NZPackedRestoreStrategy()
+    strategy = _W4A8V1NZPackedCopyStrategy()
 
     with pytest.raises(RuntimeError, match="expects int32"):
-        strategy.restore(dst, torch.zeros((1, 2), dtype=torch.int16))
+        strategy.copy(dst, torch.zeros((1, 2), dtype=torch.int16))
     with pytest.raises(RuntimeError, match="shape mismatch"):
-        strategy.restore(dst, torch.zeros((2, 2), dtype=torch.int32))
+        strategy.copy(dst, torch.zeros((2, 2), dtype=torch.int32))

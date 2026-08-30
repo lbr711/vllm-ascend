@@ -7,8 +7,8 @@ import torch.nn as nn
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import logger
 
-from vllm_ascend.snapshot.model_state import dump_state_dict, restore_state_dict
-from vllm_ascend.snapshot.tensor_state import (
+from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
     reset_model_runtime_tensor_state,
     reset_runtime_tensor_state,
     restore_derived_tensor_state,

@@ -15,11 +15,8 @@ from vllm.utils.network_utils import get_distributed_init_method
 
 from vllm_ascend.distributed.parallel_state import destroy_ascend_model_parallel
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
-from vllm_ascend.snapshot.model_restore import (
-    dump_model_runner,
-    restore_model_runner,
-)
-from vllm_ascend.snapshot.tensor_state import reset_runtime_tensor_state
+from vllm_ascend.snapshot.model_runtime.restore import dump_model_runner, restore_model_runner
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import reset_runtime_tensor_state
 
 _ACL_RT_LIB: CDLL | None = None
 
