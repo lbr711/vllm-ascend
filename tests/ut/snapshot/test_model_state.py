@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from vllm_ascend.snapshot.model_state import (
-    _copy_into_nz_int32_weight,
+    _copy_into_w4a8_v1_nz_packed_weight,
     restore_state_dict,
 )
 
@@ -39,20 +39,20 @@ def test_restore_state_dict_copies_parameters_and_buffers(tmp_path) -> None:
     "vllm_ascend.snapshot.model_state.torch_npu.npu_format_cast",
     side_effect=lambda tensor, _: tensor,
 )
-def test_copy_into_nz_int32_weight_restores_packed_bytes(mock_format_cast) -> None:
+def test_copy_into_w4a8_v1_nz_packed_weight_restores_bytes(mock_format_cast) -> None:
     src = torch.tensor([[0x01020304, -1]], dtype=torch.int32)
     dst = torch.zeros_like(src)
 
-    _copy_into_nz_int32_weight(dst, src)
+    _copy_into_w4a8_v1_nz_packed_weight(dst, src)
 
     torch.testing.assert_close(dst, src)
     mock_format_cast.assert_called_once()
 
 
-def test_copy_into_nz_int32_weight_rejects_mismatched_state() -> None:
+def test_copy_into_w4a8_v1_nz_packed_weight_rejects_mismatched_state() -> None:
     dst = torch.zeros((1, 2), dtype=torch.int32)
 
     with pytest.raises(RuntimeError, match="expects int32"):
-        _copy_into_nz_int32_weight(dst, torch.zeros((1, 2), dtype=torch.int16))
+        _copy_into_w4a8_v1_nz_packed_weight(dst, torch.zeros((1, 2), dtype=torch.int16))
     with pytest.raises(RuntimeError, match="shape mismatch"):
-        _copy_into_nz_int32_weight(dst, torch.zeros((2, 2), dtype=torch.int32))
+        _copy_into_w4a8_v1_nz_packed_weight(dst, torch.zeros((2, 2), dtype=torch.int32))

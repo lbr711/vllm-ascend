@@ -43,7 +43,7 @@ def dump_state_dict(model: nn.Module, path: str) -> None:
     logger.info("[dump model] save model ckpt to %s, elapse %.4f s", path, time.time() - start)
 
 
-def _is_nz_int32_packed_weight(tensor: torch.Tensor) -> bool:
+def _is_w4a8_v1_nz_packed_weight(tensor: torch.Tensor) -> bool:
     """Match the packed layout used by msModelSlim W4A8_DYNAMIC v1.0.0.
 
     That format casts the pre-packed int8 weight to FRACTAL_NZ and then views
@@ -57,14 +57,12 @@ def _is_nz_int32_packed_weight(tensor: torch.Tensor) -> bool:
     )
 
 
-def _copy_into_nz_int32_weight(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+def _copy_into_w4a8_v1_nz_packed_weight(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
     """Restore the W4A8_DYNAMIC v1.0.0 int8-NZ -> int32-view representation."""
     if cpu_tensor.dtype != torch.int32:
-        raise RuntimeError(f"NZ int32 packed weight restore expects int32 cpu tensor, got {cpu_tensor.dtype}")
+        raise RuntimeError(f"W4A8 v1 NZ weight restore expects int32 cpu tensor, got {cpu_tensor.dtype}")
     if cpu_tensor.shape != dst.shape:
-        raise RuntimeError(
-            f"NZ int32 packed weight shape mismatch: cpu {tuple(cpu_tensor.shape)} vs dst {tuple(dst.shape)}"
-        )
+        raise RuntimeError(f"W4A8 v1 NZ weight shape mismatch: cpu {tuple(cpu_tensor.shape)} vs dst {tuple(dst.shape)}")
 
     # Cold start casts int8 to NZ before viewing the storage as packed int32.
     cpu_i8 = cpu_tensor.contiguous().view(torch.int8)
@@ -75,8 +73,8 @@ def _copy_into_nz_int32_weight(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> N
 
 
 def _restore_tensor(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
-    if _is_nz_int32_packed_weight(dst):
-        _copy_into_nz_int32_weight(dst, cpu_tensor)
+    if _is_w4a8_v1_nz_packed_weight(dst):
+        _copy_into_w4a8_v1_nz_packed_weight(dst, cpu_tensor)
     else:
         dst.copy_(cpu_tensor)
 
