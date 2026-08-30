@@ -34,7 +34,7 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8LinearMethod,
     AscendW8A8MXFP8DynamicLinearMethod,
 )
-from vllm_ascend.utils import enable_dsa_cp
+from vllm_ascend.utils import AscendDeviceType, enable_dsa_cp
 
 
 class TestAscendSFABackend(TestBase):
@@ -322,6 +322,16 @@ class TestAscendSFACacheComposition(TestBase):
 
 
 class TestAscendSFASnapshotRestore(TestBase):
+    @staticmethod
+    def _make_impl_with_absorbed_weights(preprocess_type):
+        impl = AscendSFAImpl.__new__(AscendSFAImpl)
+        impl.q_proj = torch.nn.Linear(2, 2, bias=False)
+        impl.W_UV = torch.randn(2, 3)
+        impl.W_UK_T = torch.randn(2, 4)
+        impl.preprocess_type = preprocess_type
+        impl._persist_absorbed_weights()
+        return impl
+
     def test_absorbed_weights_are_persistent_and_rebound(self):
         impl = AscendSFAImpl.__new__(AscendSFAImpl)
         impl.q_proj = torch.nn.Linear(2, 2, bias=False)
@@ -354,6 +364,34 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.layer_name = "model.layers.0.self_attn"
 
         with self.assertRaisesRegex(RuntimeError, "absorbed weight buffers are missing"):
+            impl.restore_snapshot_derived_state(torch.bfloat16)
+
+    def test_native_restore_does_not_follow_mlapo_config(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.NATIVE)
+        impl.enable_mlapo = True
+        impl._process_weights_for_fused_mlapo = MagicMock()
+
+        impl.restore_snapshot_derived_state(torch.bfloat16)
+
+        impl._process_weights_for_fused_mlapo.assert_not_called()
+
+    @patch(
+        "vllm_ascend.attention.sfa_v1.get_ascend_device_type",
+        return_value=AscendDeviceType.A5,
+    )
+    def test_mlapo_restore_follows_selected_preprocess_type(self, _mock_device_type):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.MLAPO)
+        impl.mlapo_is_quantized = True
+        impl._process_weights_for_fused_mlapo_a5 = MagicMock()
+
+        impl.restore_snapshot_derived_state(torch.bfloat16)
+
+        impl._process_weights_for_fused_mlapo_a5.assert_called_once_with(torch.bfloat16)
+
+    def test_prolog_v3_restore_is_rejected(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.PROLOG_V3)
+
+        with self.assertRaisesRegex(RuntimeError, "prolog-v3 snapshot restore is not supported"):
             impl.restore_snapshot_derived_state(torch.bfloat16)
 
     def test_metadata_builder_reset_clears_reusable_length_buffers(self):
