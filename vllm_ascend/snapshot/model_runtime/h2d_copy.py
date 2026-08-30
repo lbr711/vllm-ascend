@@ -20,7 +20,8 @@ class _W4A8V1NZPackedCopyStrategy:
 
     def supports(self, tensor: torch.Tensor) -> bool:
         # Only the msModelSlim W4A8_DYNAMIC v1.0.0 NZ packed layout has a
-        # specialized restore strategy. Other W4A8 layouts are not supported.
+        # specialized restore strategy. The msModelSlim layouts with version
+        # other than 1.0.0 and W4A8_MXFP are not implemented.
         return (
             tensor.dtype == torch.int32
             and tensor.device.type == "npu"
