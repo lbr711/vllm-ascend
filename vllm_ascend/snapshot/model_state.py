@@ -44,6 +44,12 @@ def dump_state_dict(model: nn.Module, path: str) -> None:
 
 
 def _is_nz_int32_packed_weight(tensor: torch.Tensor) -> bool:
+    """Match the packed layout used by msModelSlim W4A8_DYNAMIC v1.0.0.
+
+    That format casts the pre-packed int8 weight to FRACTAL_NZ and then views
+    the same storage as int32. Legacy W4A8 runtime packing and W4A8_MXFP use
+    different representations and are not covered by this restore path.
+    """
     return (
         tensor.dtype == torch.int32
         and tensor.device.type == "npu"
@@ -52,7 +58,7 @@ def _is_nz_int32_packed_weight(tensor: torch.Tensor) -> bool:
 
 
 def _copy_into_nz_int32_weight(dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
-    """Restore the cold-start int8-NZ -> int32-view packed representation."""
+    """Restore the W4A8_DYNAMIC v1.0.0 int8-NZ -> int32-view representation."""
     if cpu_tensor.dtype != torch.int32:
         raise RuntimeError(f"NZ int32 packed weight restore expects int32 cpu tensor, got {cpu_tensor.dtype}")
     if cpu_tensor.shape != dst.shape:
