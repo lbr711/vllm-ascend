@@ -416,6 +416,21 @@ class TestAscendSFASnapshotRestore(TestBase):
         with self.assertRaisesRegex(RuntimeError, "missing persistent PROLOG_V3 buffer"):
             impl.restore_snapshot_derived_state(torch.bfloat16)
 
+    def test_prolog_v3_reset_rebuilds_sparse_runtime_inputs(self):
+        impl = AscendSFAImpl.__new__(AscendSFAImpl)
+        impl.topk_indices_buffer = None
+        impl.preprocess_type = PreprocessType.PROLOG_V3
+        impl.enable_sparse_sfa_c8 = True
+        impl.weight_dq = torch.empty(1)
+        impl.sfa_qsfa_k_nope_clip_alpha = None
+        impl.sfa_qsfa_kr_cache_dummy = None
+
+        impl.reset_snapshot_runtime_state()
+
+        torch.testing.assert_close(impl.sfa_qsfa_k_nope_clip_alpha, torch.ones(1))
+        self.assertEqual(impl.sfa_qsfa_kr_cache_dummy.numel(), 0)
+        self.assertEqual(impl.sfa_qsfa_kr_cache_dummy.dtype, torch.bfloat16)
+
     def test_metadata_builder_reset_clears_reusable_length_buffers(self):
         builder = AscendSFAMetadataBuilder.__new__(AscendSFAMetadataBuilder)
         builder.actual_seq_lengths_query = torch.full((4,), 7, dtype=torch.int32)
