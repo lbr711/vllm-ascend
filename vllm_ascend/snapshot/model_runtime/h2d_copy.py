@@ -19,9 +19,7 @@ class _W4A8V1NZPackedCopyStrategy:
     """Copy the msModelSlim W4A8_DYNAMIC v1.0.0 packed layout."""
 
     def supports(self, tensor: torch.Tensor) -> bool:
-        # This format casts pre-packed int8 weights to FRACTAL_NZ and then
-        # views the same storage as int32. Legacy W4A8 runtime packing and
-        # W4A8_MXFP use different representations.
+        # Match the destination storage layout handled by this strategy.
         return (
             tensor.dtype == torch.int32
             and tensor.device.type == "npu"
@@ -36,6 +34,8 @@ class _W4A8V1NZPackedCopyStrategy:
                 f"W4A8 v1 NZ weight shape mismatch: cpu {tuple(cpu_tensor.shape)} vs dst {tuple(dst.shape)}"
             )
 
+        # The checkpoint stores the int32 view in ND layout. Rebuild the
+        # original int8 FRACTAL_NZ storage before copying it into dst.
         cpu_i8 = cpu_tensor.contiguous().view(torch.int8)
         tmp = torch.empty(cpu_i8.shape, dtype=torch.int8, device=dst.device)
         tmp.copy_(cpu_i8)
