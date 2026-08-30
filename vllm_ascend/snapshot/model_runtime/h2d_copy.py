@@ -19,9 +19,7 @@ class _W4A8V1NZPackedCopyStrategy:
     """Copy the msModelSlim W4A8_DYNAMIC v1.0.0 packed layout."""
 
     def supports(self, tensor: torch.Tensor) -> bool:
-        # Only the msModelSlim W4A8_DYNAMIC v1.0.0 NZ packed layout has a
-        # specialized restore strategy. The msModelSlim layouts with version
-        # other than 1.0.0 and W4A8_MXFP are not implemented.
+        # Match the destination storage layout handled by this strategy.
         return (
             tensor.dtype == torch.int32
             and tensor.device.type == "npu"
@@ -46,6 +44,8 @@ class _W4A8V1NZPackedCopyStrategy:
 
 
 class _DirectCopyStrategy:
+    """Copy tensors that do not require layout reconstruction."""
+
     def supports(self, tensor: torch.Tensor) -> bool:
         return True
 
@@ -53,6 +53,8 @@ class _DirectCopyStrategy:
         dst.copy_(cpu_tensor)
 
 
+# Dedicated restore strategies for msModelSlim W4A8_DYNAMIC with
+# quant_description["version"] != "1.0.0" and W4A8_MXFP are not implemented.
 _TENSOR_COPY_STRATEGIES: tuple[_TensorCopyStrategy, ...] = (
     _W4A8V1NZPackedCopyStrategy(),
     _DirectCopyStrategy(),
