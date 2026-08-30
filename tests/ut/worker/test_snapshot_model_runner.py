@@ -98,6 +98,8 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
 
 def test_reset_resume_runtime_tensor_states_clears_shared_state():
     runner = SimpleNamespace()
+    runner.positions = torch.full((4,), 29, dtype=torch.int64)
+    runner._positions_cpu_buf = torch.full((4,), 31, dtype=torch.int64)
     runner.group_len = SimpleNamespace(
         gpu=torch.full((4,), 3, dtype=torch.int32),
         cpu=torch.full((4,), 5, dtype=torch.int32),
@@ -127,6 +129,8 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
     ):
         assert torch.count_nonzero(staged.gpu) == 0
         assert torch.count_nonzero(staged.cpu) == 0
+    assert torch.count_nonzero(runner.positions) == 0
+    assert torch.count_nonzero(runner._positions_cpu_buf) == 0
     assert torch.all(shared_topk == -1)
 
 
