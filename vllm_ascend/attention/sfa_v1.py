@@ -852,7 +852,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         if self.preprocess_type == PreprocessType.PROLOG_V3:
             raise RuntimeError("SFA prolog-v3 snapshot restore is not supported")
 
-        if self.enable_mlapo:
+        if self.preprocess_type == PreprocessType.MLAPO:
             if get_ascend_device_type() == AscendDeviceType.A5:
                 if getattr(self, "mlapo_is_quantized", True):
                     self._process_weights_for_fused_mlapo_a5(act_dtype)
