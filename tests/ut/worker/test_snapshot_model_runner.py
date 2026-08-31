@@ -100,6 +100,10 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
     runner = SimpleNamespace()
     runner.positions = torch.full((4,), 29, dtype=torch.int64)
     runner._positions_cpu_buf = torch.full((4,), 31, dtype=torch.int64)
+    runner.input_batch = SimpleNamespace(
+        num_computed_tokens_cpu_tensor=torch.full((4,), 37, dtype=torch.int32),
+        num_prompt_tokens_cpu_tensor=torch.full((4,), 41, dtype=torch.int32),
+    )
     runner.group_len = SimpleNamespace(
         gpu=torch.full((4,), 3, dtype=torch.int32),
         cpu=torch.full((4,), 5, dtype=torch.int32),
@@ -131,6 +135,8 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
         assert torch.count_nonzero(staged.cpu) == 0
     assert torch.count_nonzero(runner.positions) == 0
     assert torch.count_nonzero(runner._positions_cpu_buf) == 0
+    assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
+    assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
     assert torch.all(shared_topk == -1)
 
 

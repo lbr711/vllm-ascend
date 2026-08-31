@@ -129,6 +129,8 @@ def _reset_runtime_tensor_states(runner) -> None:
     """Reset runner staging buffers and model-owned reusable runtime tensors."""
     runner.positions.zero_()
     runner._positions_cpu_buf.zero_()
+    runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
+    runner.input_batch.num_prompt_tokens_cpu_tensor.zero_()
 
     for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
         staged.gpu.fill_(0)
