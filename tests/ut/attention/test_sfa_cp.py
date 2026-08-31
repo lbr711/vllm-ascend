@@ -56,6 +56,17 @@ def test_sfa_dcp_builder_sizes_replicated_view_from_padded_block_table() -> None
     assert builder.arange_buffer.shape == (8,)
 
 
+def test_sfa_dcp_builder_rebuilds_replicated_view_indices_after_restore() -> None:
+    builder = _make_builder()
+    builder.arange_buffer.zero_()
+
+    with patch.object(AscendSFAMetadataBuilder, "reset_snapshot_runtime_state") as reset_base:
+        builder.reset_snapshot_runtime_state()
+
+    reset_base.assert_called_once_with()
+    torch.testing.assert_close(builder.arange_buffer, torch.arange(8, dtype=torch.int32))
+
+
 def _make_builder(rank: int = 0) -> AscendSFADCPMetadataBuilder:
     builder = AscendSFADCPMetadataBuilder.__new__(AscendSFADCPMetadataBuilder)
     builder.dcp_size = 2

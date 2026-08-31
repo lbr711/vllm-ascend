@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -98,6 +98,8 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
 
 def test_reset_resume_runtime_tensor_states_clears_shared_state():
     runner = SimpleNamespace()
+    runner.use_dcp = True
+    runner.dcp_manager = MagicMock()
     runner.positions = torch.full((4,), 29, dtype=torch.int64)
     runner._positions_cpu_buf = torch.full((4,), 31, dtype=torch.int64)
     runner.input_batch = SimpleNamespace(
@@ -138,6 +140,7 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
     assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
     assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
     assert torch.all(shared_topk == -1)
+    runner.dcp_manager.reset_snapshot_runtime_state.assert_called_once_with()
 
 
 def test_reload_derived_weights_uses_backend_specific_hook():

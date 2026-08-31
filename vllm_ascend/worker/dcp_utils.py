@@ -127,6 +127,30 @@ class DCPManager:
         self.async_rebuild_num_tokens = 0
         self.long_seq_metadata: Any | None = None
 
+    def reset_snapshot_runtime_state(self) -> None:
+        self.num_reqs = 0
+        self.num_decode_reqs = 0
+        self.num_prefill_reqs = 0
+        self.num_decode_tokens = 0
+        self.decode_req_mask = None
+        self.req_offsets = torch.arange(
+            self.max_num_reqs,
+            dtype=torch.int64,
+            device=self.device,
+        )
+        for buffer in (
+            self.query_lens_full,
+            self.query_start_loc_full,
+            self.dcp_mtp_attn_mask,
+        ):
+            buffer.cpu.zero_()
+            buffer.gpu.zero_()
+        self.mtp_slot_mapping = None
+        self.async_rebuild_req_indices = None
+        self.async_rebuild_cu_num_tokens = None
+        self.async_rebuild_num_tokens = 0
+        self.long_seq_metadata = None
+
     def classify_decode_request_mask(
         self,
         num_scheduled_tokens: np.ndarray | torch.Tensor,

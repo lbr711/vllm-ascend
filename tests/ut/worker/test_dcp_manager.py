@@ -150,6 +150,47 @@ def test_generate_dcp_mtp_input_fills_query_start_loc_tail() -> None:
     manager.query_start_loc_full.copy_to_gpu.assert_called_once_with()
 
 
+def test_reset_snapshot_runtime_state_clears_request_state() -> None:
+    manager = object.__new__(DCPManager)
+    manager.max_num_reqs = 4
+    manager.device = torch.device("cpu")
+    manager.num_reqs = 4
+    manager.num_decode_reqs = 3
+    manager.num_prefill_reqs = 1
+    manager.num_decode_tokens = 7
+    manager.decode_req_mask = np.ones(4, dtype=np.bool_)
+    manager.req_offsets = torch.zeros(4, dtype=torch.int64)
+    manager.query_lens_full = SimpleNamespace(cpu=torch.ones(4), gpu=torch.ones(4))
+    manager.query_start_loc_full = SimpleNamespace(cpu=torch.ones(5), gpu=torch.ones(5))
+    manager.dcp_mtp_attn_mask = SimpleNamespace(cpu=torch.ones(4), gpu=torch.ones(4))
+    manager.mtp_slot_mapping = torch.ones(4)
+    manager.async_rebuild_req_indices = np.ones(4)
+    manager.async_rebuild_cu_num_tokens = np.ones(4)
+    manager.async_rebuild_num_tokens = 4
+    manager.long_seq_metadata = object()
+
+    manager.reset_snapshot_runtime_state()
+
+    assert manager.num_reqs == 0
+    assert manager.num_decode_reqs == 0
+    assert manager.num_prefill_reqs == 0
+    assert manager.num_decode_tokens == 0
+    assert manager.decode_req_mask is None
+    torch.testing.assert_close(manager.req_offsets, torch.arange(4))
+    for buffer in (
+        manager.query_lens_full,
+        manager.query_start_loc_full,
+        manager.dcp_mtp_attn_mask,
+    ):
+        assert torch.count_nonzero(buffer.cpu) == 0
+        assert torch.count_nonzero(buffer.gpu) == 0
+    assert manager.mtp_slot_mapping is None
+    assert manager.async_rebuild_req_indices is None
+    assert manager.async_rebuild_cu_num_tokens is None
+    assert manager.async_rebuild_num_tokens == 0
+    assert manager.long_seq_metadata is None
+
+
 def test_update_spec_decode_drafting_metadata_skips_prefill() -> None:
     manager = object.__new__(DCPManager)
     manager.dcp_world_rank = 0

@@ -131,6 +131,8 @@ def _reset_runtime_tensor_states(runner) -> None:
     runner._positions_cpu_buf.zero_()
     runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
     runner.input_batch.num_prompt_tokens_cpu_tensor.zero_()
+    if runner.use_dcp:
+        runner.dcp_manager.reset_snapshot_runtime_state()
 
     for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
         staged.gpu.fill_(0)

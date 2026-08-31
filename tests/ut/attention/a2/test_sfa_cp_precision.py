@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
+from vllm_ascend.attention.context_parallel.common_cp import DCPImplMixin
 from vllm_ascend.attention.context_parallel.sfa_cp import AscendSFADCPImpl
 
 try:
@@ -103,3 +106,38 @@ def test_sfa_dcp_sparse_indices_3d_input(interleave_size: int) -> None:
             _reference_remap(indices, dcp_size, rank, interleave_size),
             msg=f"mismatch for interleave_size={interleave_size}, rank={rank}",
         )
+
+
+def test_sfa_dcp_rebuilds_sparse_index_remap_after_restore() -> None:
+    impl = _make_impl(0)
+    impl._remap_order.zero_()
+    impl._remap_invalid_index.zero_()
+
+    with patch.object(DCPImplMixin, "reset_snapshot_runtime_state") as reset_base:
+        impl.reset_snapshot_runtime_state()
+
+    reset_base.assert_called_once_with()
+    torch.testing.assert_close(impl._remap_order, torch.arange(8, dtype=torch.float32))
+    torch.testing.assert_close(impl._remap_invalid_index, torch.tensor(-1.0))
+
+
+def test_sfa_dcp_torch_merge_handles_invalid_lse() -> None:
+    output = torch.tensor(
+        [
+            [[[1.0]], [[3.0]]],
+            [[[5.0]], [[7.0]]],
+        ]
+    )
+    lse = torch.tensor(
+        [
+            [[0.0], [float("-inf")]],
+            [[0.0], [0.0]],
+        ]
+    )
+
+    merged = AscendSFADCPImpl._merge_dcp_outputs_with_torch(output, lse, token_dim=2)
+
+    torch.testing.assert_close(merged, torch.tensor([[[3.0], [7.0]]]))
+
+    dsa_merged = AscendSFADCPImpl._merge_dcp_outputs_with_torch(output, lse, token_dim=1)
+    torch.testing.assert_close(dsa_merged, torch.tensor([[[3.0]], [[7.0]]]))
