@@ -103,6 +103,34 @@ class TestCommonCP(unittest.TestCase):
         self.assertIs(impl.dcp_device_group, group.device_group)
         mock_get_dcp_group.assert_called_once_with()
 
+    @patch("vllm_ascend.attention.context_parallel.common_cp.get_dcp_group")
+    def test_impl_mixin_refreshes_dcp_group_after_restore(
+        self,
+        mock_get_dcp_group,
+    ):
+        class BaseImpl:
+            def __init__(self):
+                self.base_reset = False
+
+            def reset_snapshot_runtime_state(self):
+                self.base_reset = True
+
+        class Impl(DCPImplMixin, BaseImpl):
+            pass
+
+        old_group = MagicMock(world_size=2, rank_in_group=0)
+        new_group = MagicMock(world_size=4, rank_in_group=1)
+        mock_get_dcp_group.side_effect = [old_group, new_group]
+        impl = Impl()
+
+        impl.reset_snapshot_runtime_state()
+
+        self.assertIs(impl.dcp_group, new_group)
+        self.assertEqual(impl.dcp_size, 4)
+        self.assertEqual(impl.dcp_rank, 1)
+        self.assertIs(impl.dcp_device_group, new_group.device_group)
+        self.assertTrue(impl.base_reset)
+
     @patch("vllm_ascend.attention.context_parallel.common_cp.get_decode_context_model_parallel_world_size")
     @patch("vllm_ascend.attention.context_parallel.common_cp.get_dcp_group")
     @patch("torch.distributed.all_to_all_single")
