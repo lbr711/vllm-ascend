@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from unittest.mock import patch
+
 import torch
 
+from vllm_ascend.attention.context_parallel.common_cp import DCPImplMixin
 from vllm_ascend.attention.context_parallel.sfa_cp import AscendSFADCPImpl
 
 
@@ -30,6 +33,19 @@ def test_sfa_dcp_sparse_indices_are_compacted_per_owner_rank() -> None:
         rank1,
         torch.tensor([[0, 1, 2, -1, -1, -1, -1, -1]], dtype=torch.int32),
     )
+
+
+def test_sfa_dcp_rebuilds_sparse_index_remap_after_restore() -> None:
+    impl = _make_impl(0)
+    impl._remap_order.zero_()
+    impl._remap_invalid_index.zero_()
+
+    with patch.object(DCPImplMixin, "reset_snapshot_runtime_state") as reset_base:
+        impl.reset_snapshot_runtime_state()
+
+    reset_base.assert_called_once_with()
+    torch.testing.assert_close(impl._remap_order, torch.arange(8, dtype=torch.float32))
+    torch.testing.assert_close(impl._remap_invalid_index, torch.tensor(-1.0))
 
 
 def test_sfa_dcp_torch_merge_handles_invalid_lse() -> None:

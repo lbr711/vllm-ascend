@@ -134,6 +134,14 @@ class AscendSFADCPMetadataBuilder(
             device=device,
         )
 
+    def reset_snapshot_runtime_state(self) -> None:
+        super().reset_snapshot_runtime_state()
+        self.arange_buffer = torch.arange(
+            self.arange_buffer.numel(),
+            dtype=torch.int32,
+            device=self.device,
+        )
+
     def _get_dcp_local_seq_lens(self, seq_lens: torch.Tensor) -> torch.Tensor:
         return get_dcp_local_seq_lens(
             seq_lens,
@@ -416,9 +424,15 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
                 break
         if self._dcp_index_topk <= 0:
             raise RuntimeError("index_topk must be set in the model config for DCP SFA.")
-        device = self.q_proj.weight.device
+        self._initialize_sparse_index_remap(self.q_proj.weight.device)
+
+    def _initialize_sparse_index_remap(self, device: torch.device) -> None:
         self._remap_order = torch.arange(self._dcp_index_topk, dtype=torch.float32, device=device)
         self._remap_invalid_index = torch.tensor(-1.0, dtype=torch.float32, device=device)
+
+    def reset_snapshot_runtime_state(self) -> None:
+        super().reset_snapshot_runtime_state()
+        self._initialize_sparse_index_remap(self._remap_order.device)
 
     @staticmethod
     def _has_prefill(attn_metadata: M) -> bool:
