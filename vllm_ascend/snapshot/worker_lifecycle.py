@@ -180,7 +180,7 @@ def _rebuild_kv_transfer_engine(worker, local_ip: str, new_engine_id: str | None
     if not has_kv_transfer_group():
         return
     rebuild = getattr(
-        getattr(get_kv_transfer_group(), "connector_worker", None),
+        get_kv_transfer_group(),
         "rebuild_kv_transfer_endpoint",
         None,
     )

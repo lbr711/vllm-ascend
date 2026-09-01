@@ -1186,6 +1186,12 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.connector_scheduler is not None
         self.connector_scheduler.set_xfer_handshake_metadata(metadata)
 
+    def rebuild_kv_transfer_endpoint(
+        self, local_ip: str, new_engine_id: str | None = None
+    ) -> None:
+        if self.connector_worker is not None:
+            self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+
 
 class MooncakeConnectorScheduler:
     """Implementation of Scheduler side methods"""

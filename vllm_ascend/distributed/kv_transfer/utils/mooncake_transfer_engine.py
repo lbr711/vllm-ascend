@@ -8,6 +8,7 @@ logger = init_logger(__name__)
 class GlobalTE:
     def __init__(self):
         self.transfer_engine = None
+        self.hostname: str | None = None
         self.is_register_buffer: bool = False
         self.transfer_engine_lock = threading.Lock()
         self.register_buffer_lock = threading.Lock()
@@ -30,6 +31,7 @@ class GlobalTE:
                     ret_value = self.transfer_engine.initialize(hostname, "P2PHANDSHAKE", "ascend", device_name)
                     if ret_value != 0:
                         raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+                    self.hostname = hostname
         return self.transfer_engine
 
     def register_buffer(self, ptrs: list[int], sizes: list[int]):
@@ -48,6 +50,7 @@ class GlobalTE:
         with self.transfer_engine_lock:
             old_engine = self.transfer_engine
             self.transfer_engine = None
+            self.hostname = None
         with self.register_buffer_lock:
             self.is_register_buffer = False
 

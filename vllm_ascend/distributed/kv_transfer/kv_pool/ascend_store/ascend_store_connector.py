@@ -116,7 +116,9 @@ class AscendStoreConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector_scheduler = KVPoolScheduler(
                 vllm_config, self.use_layerwise, kv_cache_config, page_size_bytes=page_size_bytes
             )
+            self.connector_worker: KVPoolWorker | None = None
         else:
+            self.connector_scheduler = None
             self.connector_worker = KVPoolWorker(
                 vllm_config,
                 self.use_layerwise,
@@ -125,6 +127,18 @@ class AscendStoreConnector(KVConnectorBase_V1, SupportsHMA):
             assert self.connector_worker is not None
             if not self.use_layerwise and vllm_config.parallel_config.rank == 0:
                 self.lookup_server = LookupKeyServer(self.connector_worker, vllm_config)
+
+    def prepare_for_snapshot_restore(self) -> None:
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.prepare_for_snapshot_restore()
+        if self.connector_worker is not None:
+            self.connector_worker.prepare_for_snapshot_restore()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+        if self.connector_worker is not None:
+            self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
     ############################################################
     # Scheduler Side Methods

@@ -357,6 +357,9 @@ class TestMooncakeBackendMethods(unittest.TestCase):
             backend._store_initialized = True
             backend._use_fabric_mem = False
             backend._store_init_lock = MagicMock()
+            backend._local_hostname = "127.0.0.1"
+            backend._registered_buffers = None
+            backend._store_was_initialized = None
             backend.local_seg = None
             return backend
 
@@ -420,6 +423,47 @@ class TestMooncakeBackendMethods(unittest.TestCase):
         ):
             b.register_buffer([100], [200])
             mock_te.register_buffer.assert_called_once()
+
+    def test_reset_after_snapshot_restores_initialized_lazy_store(self):
+        b = self._make_backend()
+        b._lazy_init = True
+        b.prepare_for_snapshot_restore()
+        new_store = MagicMock()
+        b._setup_store = MagicMock(return_value=new_store)
+        config = MagicMock(protocol="ascend")
+
+        with (
+            patch.object(MooncakeStoreConfig, "load_from_env", return_value=config),
+            patch(
+                "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.mooncake_backend.global_te"
+            ) as mock_te,
+        ):
+            mock_te.hostname = "10.0.0.2"
+            b.reset_after_snapshot("10.0.0.2")
+
+        self.assertIs(b.store, new_store)
+        self.assertTrue(b._store_initialized)
+
+    def test_reset_after_snapshot_rebuilds_transfer_engine_and_buffers(self):
+        b = self._make_backend()
+        b._registered_buffers = ([100], [200])
+        new_store = MagicMock()
+        b._setup_store = MagicMock(return_value=new_store)
+        config = MagicMock(protocol="ascend")
+
+        with (
+            patch.object(MooncakeStoreConfig, "load_from_env", return_value=config),
+            patch(
+                "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.mooncake_backend.global_te"
+            ) as mock_te,
+        ):
+            mock_te.hostname = "10.0.0.1"
+            b.reset_after_snapshot("10.0.0.2")
+
+        mock_te.transfer_engine.unregister_memory.assert_called_once_with(100)
+        mock_te.reset.assert_called_once_with()
+        mock_te.register_buffer.assert_called_once_with([100], [200])
+        self.assertIs(b.store, new_store)
 
 
 # =========================================================================
@@ -601,6 +645,8 @@ class TestMemcacheBackendMethods(unittest.TestCase):
             backend._lazy_init = False
             backend._store_initialized = True
             backend._pending_buffers = None
+            backend._registered_buffers = None
+            backend._store_was_initialized = None
             return backend
 
     def test_exists(self):
@@ -669,6 +715,28 @@ class TestMemcacheBackendMethods(unittest.TestCase):
         error_log = _format_log_call(mock_logger.error.call_args)
         self.assertIn("RuntimeError", error_log)
         self.assertIn("backend fail", error_log)
+
+    def test_reset_after_snapshot_restores_initialized_lazy_store(self):
+        b = self._make_backend()
+        b._lazy_init = True
+        b.prepare_for_snapshot_restore()
+        new_store = MagicMock()
+        b._setup_store = MagicMock(return_value=new_store)
+
+        b.reset_after_snapshot("10.0.0.2")
+
+        self.assertIs(b.store, new_store)
+        self.assertTrue(b._store_initialized)
+
+    def test_reset_after_snapshot_reregisters_buffers(self):
+        b = self._make_backend()
+        b._registered_buffers = ([100], [200])
+        new_store = MagicMock()
+        b._setup_store = MagicMock(return_value=new_store)
+
+        b.reset_after_snapshot("10.0.0.2")
+
+        new_store.register_buffer.assert_called_once_with(100, 200)
 
 
 if __name__ == "__main__":

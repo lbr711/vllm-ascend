@@ -214,8 +214,7 @@ def test_rebuild_kv_transfer_engine_after_resume_delegates_to_connector(worker):
     from vllm_ascend.snapshot.worker_lifecycle import _rebuild_kv_transfer_engine
 
     rebuild = MagicMock()
-    connector_worker = SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild)
-    kv_group = SimpleNamespace(connector_worker=connector_worker)
+    kv_group = SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild)
 
     with (
         patch("vllm_ascend.snapshot.worker_lifecycle.has_kv_transfer_group", return_value=True),
@@ -231,8 +230,7 @@ def test_rebuild_kv_transfer_engine_after_resume_delegates_to_hybrid_connector(w
 
     worker.vllm_config.kv_transfer_config.kv_connector = "MooncakeHybridConnector"
     rebuild = MagicMock()
-    connector_worker = SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild)
-    kv_group = SimpleNamespace(connector_worker=connector_worker)
+    kv_group = SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild)
 
     with (
         patch("vllm_ascend.snapshot.worker_lifecycle.has_kv_transfer_group", return_value=True),

@@ -859,6 +859,12 @@ class MooncakeLayerwiseConnector(KVConnectorBase_V1, SupportsHMA):
         """MooncakeLayerwiseConnector does not save explicitly."""
         pass
 
+    def rebuild_kv_transfer_endpoint(
+        self, local_ip: str, new_engine_id: str | None = None
+    ) -> None:
+        if self.connector_worker is not None:
+            self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+
 
 class MooncakeLayerwiseConnectorScheduler:
     """Implementation of Scheduler side methods"""
