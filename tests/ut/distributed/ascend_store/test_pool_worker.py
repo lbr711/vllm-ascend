@@ -40,6 +40,17 @@ class TestKVPoolWorkerHelpers(unittest.TestCase):
 
         return KVPoolWorker
 
+    def test_rebuild_kv_transfer_endpoint_resets_backend_and_gvas(self):
+        worker = object.__new__(self._make_worker_class())
+        worker.m_store = MagicMock()
+        worker.backend_name = "memcache"
+        worker._allocated_gvas = {"key": 1}
+
+        worker.rebuild_kv_transfer_endpoint("10.0.0.2")
+
+        worker.m_store.reset_after_snapshot.assert_called_once_with("10.0.0.2")
+        self.assertEqual(worker._allocated_gvas, {})
+
     def test_check_all_layers_exists_all_present(self):
         cls = self._make_worker_class()
         # Manually call as unbound

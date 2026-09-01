@@ -436,6 +436,14 @@ class KVPoolWorker:
             {k: v for k, v in list(self.physical_layer_to_group_layers.items())[:3]},
         )
 
+    def prepare_for_snapshot_restore(self) -> None:
+        self.m_store.prepare_for_snapshot_restore()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        logger.info("[snapshot][rebuild] resetting worker KV pool backend %s", self.backend_name)
+        self.m_store.reset_after_snapshot(local_ip)
+        self._allocated_gvas.clear()
+
     def _build_group_layer_builders(self) -> list[LayerBatchBuilder]:
         builders = []
         for group_id in range(self.num_kv_cache_groups):

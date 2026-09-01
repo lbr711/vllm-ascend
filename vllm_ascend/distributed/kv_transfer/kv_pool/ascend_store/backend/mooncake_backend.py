@@ -68,11 +68,14 @@ class MooncakeBackend(Backend):
 
         self.store: Any | None = None
         self.local_seg: str | None = None
+        self._local_hostname = get_ip()
         self._use_fabric_mem = os.getenv("ASCEND_ENABLE_USE_FABRIC_MEM", "0") == "1"
         self._lazy_init = lazy_init and self._use_fabric_mem
         self._contribute_memory = contribute_memory
         self._store_initialized = False
         self._store_init_lock = threading.Lock()
+        self._registered_buffers: tuple[list[int], list[int]] | None = None
+        self._store_was_initialized: bool | None = None
 
         if not self._lazy_init:
             self.store = self._setup_store()
@@ -101,7 +104,7 @@ class MooncakeBackend(Backend):
             ) from e
 
         store = MooncakeDistributedStore()
-        local_hostname = get_ip()
+        local_hostname = self._local_hostname
         ssd_kwargs = _ssd_setup_kwargs(self.config)
         # Each rank that contributes memory to the pool uses its own SSD
         # directory to avoid bucket file collisions. Key by the globally unique
@@ -171,10 +174,49 @@ class MooncakeBackend(Backend):
         torch.npu.set_device(device)
 
     def register_buffer(self, ptrs: list[int], lengths: list[int]):
+        self._registered_buffers = (list(ptrs), list(lengths))
         if not self._use_fabric_mem:
-            local_hostname = get_ip()
-            global_te.get_transfer_engine(local_hostname, device_name=None)
+            global_te.get_transfer_engine(self._local_hostname, device_name=None)
             global_te.register_buffer(ptrs, lengths)
+
+    def prepare_for_snapshot_restore(self) -> None:
+        if self._store_was_initialized is None:
+            self._store_was_initialized = self._store_initialized
+        self.store = None
+        self.local_seg = None
+        self._store_initialized = False
+
+        import gc
+
+        gc.collect()
+
+    def reset_after_snapshot(self, local_ip: str) -> None:
+        self.prepare_for_snapshot_restore()
+        restore_initialized_store = bool(self._store_was_initialized)
+        self.config = MooncakeStoreConfig.load_from_env()
+        if self.config.protocol != "ascend":
+            raise NotImplementedError(f"MooncakeBackend does not support protocol {self.config.protocol!r}.")
+        self._local_hostname = local_ip
+
+        if not self._use_fabric_mem and global_te.hostname != local_ip:
+            old_engine = global_te.transfer_engine
+            if old_engine is not None and self._registered_buffers is not None:
+                ptrs, _ = self._registered_buffers
+                for ptr in dict.fromkeys(ptrs):
+                    try:
+                        old_engine.unregister_memory(ptr)
+                    except Exception as e:
+                        logger.warning("[snapshot][rebuild] unregister %s failed: %s", hex(ptr), e)
+            global_te.reset()
+
+        if restore_initialized_store or not self._lazy_init:
+            self.store = self._setup_store()
+            self._store_initialized = True
+
+        if self._registered_buffers is not None:
+            ptrs, lengths = self._registered_buffers
+            self.register_buffer(ptrs, lengths)
+        self._store_was_initialized = None
 
     def exists(self, keys: list[str]) -> list[int]:
         if self._lazy_init and not self._store_initialized:

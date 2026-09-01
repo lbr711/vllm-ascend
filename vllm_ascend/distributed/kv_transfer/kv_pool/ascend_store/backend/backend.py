@@ -47,6 +47,12 @@ class Backend(ABC):
     def batch_write_finish(self, keys: list[str], results: list[int]) -> list[int]:
         raise NotImplementedError(f"{type(self).__name__} does not support batch_write_finish")
 
+    def prepare_for_snapshot_restore(self) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshot restore")
+
+    def reset_after_snapshot(self, local_ip: str) -> None:
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshot restore")
+
     @abstractmethod
     def put(self, keys: list[str], addrs: list[list[int]], sizes: list[list[int]]):
         pass

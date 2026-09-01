@@ -11,6 +11,9 @@ pytest.importorskip("vllm")
 from vllm_ascend.distributed.kv_transfer.ascend_multi_connector import (  # noqa: E402
     AscendMultiConnector,
 )
+from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.ascend_store_connector import (  # noqa: E402
+    AscendStoreConnector,
+)
 
 
 class _FakeBlocks:
@@ -125,6 +128,8 @@ def test_layerwise_reuse_without_sink_keeps_provider_layer_entry_wait():
     connector.wait_for_layer_load("model.layers.7.self_attn")
 
     assert call_order == ["provider", "sibling"]
+
+
 def test_rebuild_kv_transfer_endpoint_forwards_to_supported_sub_connectors():
     rebuild = MagicMock()
     connector = object.__new__(AscendMultiConnector)
@@ -136,3 +141,20 @@ def test_rebuild_kv_transfer_endpoint_forwards_to_supported_sub_connectors():
     connector.rebuild_kv_transfer_endpoint("10.0.0.8", "engine-new")
 
     rebuild.assert_called_once_with("10.0.0.8", "engine-new")
+
+
+def test_pool_connector_rebuilds_after_other_connectors():
+    calls = []
+    p2p = SimpleNamespace(rebuild_kv_transfer_endpoint=lambda *_: calls.append("p2p-rebuild"))
+    pool = object.__new__(AscendStoreConnector)
+    pool.connector_scheduler = SimpleNamespace(
+        prepare_for_snapshot_restore=lambda: calls.append("pool-prepare"),
+        rebuild_kv_transfer_endpoint=lambda *_: calls.append("pool-rebuild"),
+    )
+    pool.connector_worker = None
+    connector = object.__new__(AscendMultiConnector)
+    connector._connectors = [pool, p2p]
+
+    connector.rebuild_kv_transfer_endpoint("10.0.0.8", "engine-new")
+
+    assert calls == ["pool-prepare", "p2p-rebuild", "pool-rebuild"]
