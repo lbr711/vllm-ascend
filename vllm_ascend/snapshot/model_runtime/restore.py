@@ -8,11 +8,11 @@ from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import logger
 
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
+from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
+    rebuild_model_derived_tensors_after_snapshot_restore,
     reset_model_modules_after_snapshot_restore,
-    restore_derived_tensor_state,
-    restore_global_tensor_state,
 )
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_global_tensor_state
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
 
 
@@ -55,7 +55,7 @@ def dump_model_runner(runner, path: str = "/mnt") -> None:
 
 def _restore_model_checkpoint(runner, model: nn.Module, model_save_path: str, label: str) -> None:
     restore_state_dict(model, model_save_path, label)
-    restore_derived_tensor_state(model, runner.model_config.dtype, label)
+    rebuild_model_derived_tensors_after_snapshot_restore(model, runner.model_config.dtype, label)
 
 
 def restore_model_runner(runner, path: str = "/mnt") -> None:
