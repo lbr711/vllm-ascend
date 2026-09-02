@@ -76,7 +76,7 @@ def suspend_worker(worker, model_save_path: str | None = None) -> None:
         ("dump_model_checkpoint", lambda: dump_model_runner(worker.model_runner, model_save_path)),
         ("collect_garbage", gc.collect),
         ("lock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")),
-        ("back_up_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),
+        ("snapshot_process_backup", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),
     )
     _run_timed_steps(worker, steps)
 
