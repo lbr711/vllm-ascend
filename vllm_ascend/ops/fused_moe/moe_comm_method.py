@@ -301,7 +301,7 @@ class FusedMC2CommImpl(MoECommMethod):
     def _get_prepare_finalize(self):
         return PrepareAndFinalizeWithMC2(self.moe_config)
 
-    def reset_snapshot_runtime_state(self) -> None:
+    def reset_transient_state_after_snapshot_restore(self) -> None:
         self._mega_moe_symm_buffer = None
 
     def _init_mega_moe_symm_buffer(

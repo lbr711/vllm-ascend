@@ -527,7 +527,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
 
         [snapshot] This is a plain class attribute holding a *device* tensor, not
         an ``nn.Module`` buffer, so it is neither serialized by ``dump_model`` nor
-        rebuilt by the duck-typed ``restore_snapshot_derived_state`` scan.
+        rebuilt by the duck-typed ``rebuild_derived_tensors_after_snapshot_restore`` scan.
         Its backing device memory is invalidated (observed as all-zero) by
         suspend/resume; a zero hadamard makes ``F.linear(x, 0) == 0``, zeroing the
         indexer q/k and collapsing ``query_dequant_scale`` / ``key_dequant_scale``

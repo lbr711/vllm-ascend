@@ -48,7 +48,7 @@ def reset_model_modules_after_restore(models: Iterable[nn.Module | None]) -> int
             if id(module) in reset_ids:
                 continue
             reset_ids.add(id(module))
-            reset_state = getattr(module, "reset_snapshot_runtime_state", None)
+            reset_state = getattr(module, "reset_transient_state_after_snapshot_restore", None)
             if callable(reset_state):
                 reset_state()
                 reset_count += 1
@@ -59,7 +59,7 @@ def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label
     restored = 0
 
     for module in model.modules():
-        restore = getattr(module, "restore_snapshot_derived_state", None)
+        restore = getattr(module, "rebuild_derived_tensors_after_snapshot_restore", None)
         if not callable(restore):
             continue
         restore(act_dtype)

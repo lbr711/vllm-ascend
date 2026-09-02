@@ -450,7 +450,7 @@ class AscendMLAMetadataBuilder(MLACommonMetadataBuilder[AscendMLAMetadata]):
         self.seq_lens: torch.Tensor = None
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
 
-    def reset_snapshot_runtime_state(self) -> None:
+    def reset_transient_state_after_snapshot_restore(self) -> None:
         # [snapshot] Clear per-iteration runtime metadata so post-resume build
         # cannot accidentally reuse stale host/device buffers.
         self.chunk_seq_lens = None
@@ -1214,7 +1214,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             # if mlapo, W_UK_T can't trans nz
             self.W_UK_T = maybe_trans_nz(self.W_UK_T)
 
-    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
         """Rebuild decode weights that are derived outside ``state_dict``."""
         if getattr(self, "kv_b_proj", None) is None:
             return

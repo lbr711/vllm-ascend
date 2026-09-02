@@ -134,8 +134,8 @@ class AscendSFADCPMetadataBuilder(
             device=device,
         )
 
-    def reset_snapshot_runtime_state(self) -> None:
-        super().reset_snapshot_runtime_state()
+    def reset_transient_state_after_snapshot_restore(self) -> None:
+        super().reset_transient_state_after_snapshot_restore()
         self.arange_buffer = torch.arange(
             self.arange_buffer.numel(),
             dtype=torch.int32,
@@ -430,8 +430,8 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
         self._remap_order = torch.arange(self._dcp_index_topk, dtype=torch.float32, device=device)
         self._remap_invalid_index = torch.tensor(-1.0, dtype=torch.float32, device=device)
 
-    def reset_snapshot_runtime_state(self) -> None:
-        super().reset_snapshot_runtime_state()
+    def reset_transient_state_after_snapshot_restore(self) -> None:
+        super().reset_transient_state_after_snapshot_restore()
         self._initialize_sparse_index_remap(self._remap_order.device)
 
     @staticmethod

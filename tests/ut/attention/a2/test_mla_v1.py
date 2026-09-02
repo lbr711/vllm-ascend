@@ -2099,7 +2099,7 @@ class TestAscendMLAImpl(TestBase):
         self.impl.vllm_config.compilation_config.static_forward_context = {"layer": layer}
         self.impl._process_weights_for_fused_fa_quant = MagicMock()
 
-        self.impl.restore_snapshot_derived_state(torch.bfloat16)
+        self.impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
         layer.quant_method.process_weights_after_loading.assert_called_once_with(layer)
         self.impl._process_weights_for_fused_fa_quant.assert_called_once_with()

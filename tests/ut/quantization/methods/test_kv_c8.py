@@ -636,7 +636,7 @@ class TestAscendC8AttentionBackendImplScales(TestBase):
         impl._prepare_c8_scales(layer, torch.device("cpu"))
         layer.k_cache_scale.data.fill_(2)
 
-        impl.reset_snapshot_runtime_state()
+        impl.reset_transient_state_after_snapshot_restore()
         impl._prepare_c8_scales(layer, torch.device("cpu"))
 
         self.assertTrue(torch.all(layer._c8_k_scale == 2))

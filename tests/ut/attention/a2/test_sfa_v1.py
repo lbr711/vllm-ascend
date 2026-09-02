@@ -365,14 +365,14 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.layer_name = "model.layers.0.self_attn"
 
         with self.assertRaisesRegex(RuntimeError, "absorbed weight buffers are missing"):
-            impl.restore_snapshot_derived_state(torch.bfloat16)
+            impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
     def test_native_restore_does_not_follow_mlapo_config(self):
         impl = self._make_impl_with_absorbed_weights(PreprocessType.NATIVE)
         impl.enable_mlapo = True
         impl._process_weights_for_fused_mlapo = MagicMock()
 
-        impl.restore_snapshot_derived_state(torch.bfloat16)
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
         impl._process_weights_for_fused_mlapo.assert_not_called()
 
@@ -385,7 +385,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.mlapo_is_quantized = True
         impl._process_weights_for_fused_mlapo_a5 = MagicMock()
 
-        impl.restore_snapshot_derived_state(torch.bfloat16)
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
         impl._process_weights_for_fused_mlapo_a5.assert_called_once_with(torch.bfloat16)
 
@@ -403,7 +403,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         for attr_name, _ in names:
             setattr(impl, attr_name, torch.empty(0))
 
-        impl.restore_snapshot_derived_state(torch.bfloat16)
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
         for attr_name, _ in names:
             self.assertIs(getattr(impl, attr_name), expected[attr_name])
@@ -414,7 +414,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.enable_sparse_sfa_c8 = False
 
         with self.assertRaisesRegex(RuntimeError, "missing persistent PROLOG_V3 buffer"):
-            impl.restore_snapshot_derived_state(torch.bfloat16)
+            impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
     def test_prolog_v3_reset_rebuilds_sparse_runtime_inputs(self):
         impl = AscendSFAImpl.__new__(AscendSFAImpl)
@@ -425,7 +425,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.sfa_qsfa_k_nope_clip_alpha = None
         impl.sfa_qsfa_kr_cache_dummy = None
 
-        impl.reset_snapshot_runtime_state()
+        impl.reset_transient_state_after_snapshot_restore()
 
         torch.testing.assert_close(impl.sfa_qsfa_k_nope_clip_alpha, torch.ones(1))
         self.assertEqual(impl.sfa_qsfa_kr_cache_dummy.numel(), 0)
@@ -444,7 +444,7 @@ class TestAscendSFASnapshotRestore(TestBase):
             torch.full((4,), 23, dtype=torch.int32),
         ]
 
-        builder.reset_snapshot_runtime_state()
+        builder.reset_transient_state_after_snapshot_restore()
 
         buffers = [
             builder.actual_seq_lengths_query,
