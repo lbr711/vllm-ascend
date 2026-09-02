@@ -5,8 +5,9 @@ import pytest
 import torch
 
 from vllm_ascend.snapshot.model_runtime.restore import (
-    _reset_block_table_device_buffers,
-    _reset_runtime_tensor_states,
+    _reset_block_table_runtime_state,
+    _reset_runner_and_model_runtime_tensors,
+    _restore_model_runner_runtime_state,
     dump_model_runner,
     restore_model_runner,
 )
@@ -78,13 +79,8 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
 
     with (
         patch("vllm_ascend.snapshot.model_runtime.restore.get_tp_group") as tp_group,
-        patch("vllm_ascend.snapshot.model_runtime.restore._restore_one_model") as restore_one,
-        patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state"),
-        patch("vllm_ascend.snapshot.model_runtime.restore._clear_spec_decode_carryover"),
-        patch("vllm_ascend.snapshot.model_runtime.restore.restore_drafter_runtime_buffers"),
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builder_runtime_states"),
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runtime_tensor_states"),
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_block_table_device_buffers"),
+        patch("vllm_ascend.snapshot.model_runtime.restore._restore_model_checkpoint") as restore_one,
+        patch("vllm_ascend.snapshot.model_runtime.restore._restore_model_runner_runtime_state") as restore_runtime,
     ):
         tp_group.return_value.rank_in_group = 3
         restore_model_runner(runner, str(tmp_path))
@@ -94,6 +90,29 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
     assert restore_one.call_args_list[0].args[3] == "model"
     assert restore_one.call_args_list[1].args[1] is drafter_model
     assert restore_one.call_args_list[1].args[3] == "drafter"
+    restore_runtime.assert_called_once_with(runner, model)
+
+
+def test_restore_model_runner_runtime_state_runs_all_phases():
+    runner = _make_runner(torch.nn.Module(), torch.nn.Module())
+    model = runner.get_model()
+
+    with (
+        patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state") as restore_global,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_spec_decode_runtime_state") as reset_spec,
+        patch("vllm_ascend.snapshot.model_runtime.restore._restore_drafter_runtime_state") as restore_drafter,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builder_runtime_state") as reset_attention,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_and_model_runtime_tensors") as reset_tensors,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_block_table_runtime_state") as reset_block_table,
+    ):
+        _restore_model_runner_runtime_state(runner, model)
+
+    restore_global.assert_called_once_with(model, runner.model_config.hf_config, runner.device)
+    reset_spec.assert_called_once_with(runner)
+    restore_drafter.assert_called_once_with(runner)
+    reset_attention.assert_called_once_with(runner)
+    reset_tensors.assert_called_once_with(runner)
+    reset_block_table.assert_called_once_with(runner)
 
 
 def test_reset_resume_runtime_tensor_states_clears_shared_state():
@@ -126,7 +145,7 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
     runner.get_model = lambda: model
     runner.drafter = SimpleNamespace(model=drafter)
 
-    _reset_runtime_tensor_states(runner)
+    _reset_runner_and_model_runtime_tensors(runner)
 
     for staged in (
         runner.group_len,
@@ -169,7 +188,7 @@ def test_reset_block_tables_clears_cpu_and_device_buffers():
     block_table = SimpleNamespace(block_tables=[SimpleNamespace(block_table=buf) for buf in buffers])
     runner.input_batch = SimpleNamespace(block_table=block_table)
 
-    _reset_block_table_device_buffers(runner)
+    _reset_block_table_runtime_state(runner)
 
     for buf in buffers:
         assert torch.count_nonzero(buf.gpu) == 0
