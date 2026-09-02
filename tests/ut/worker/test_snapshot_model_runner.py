@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from vllm_ascend.models.layer.attention.layer import DSAAttention
 from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
     rebuild_model_derived_tensors_after_snapshot_restore,
+    reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_table_runtime_state,
@@ -44,27 +44,10 @@ class _ImplHolder(torch.nn.Module):
         super().__init__()
         self.impl = impl
 
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
-        self.impl.rebuild_derived_tensors_after_snapshot_restore(act_dtype)
-
-    def reset_runtime_state_after_snapshot_restore(self) -> None:
-        self.impl.reset_runtime_state_after_snapshot_restore()
-
 
 class _FailingReloadTarget:
     def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
         raise RuntimeError("restore failed")
-
-
-def test_dsa_snapshot_hooks_are_forwarded_to_impl():
-    impl = MagicMock()
-    layer = SimpleNamespace(impl=impl)
-
-    DSAAttention.rebuild_derived_tensors_after_snapshot_restore(layer, torch.bfloat16)
-    DSAAttention.reset_runtime_state_after_snapshot_restore(layer)
-
-    impl.rebuild_derived_tensors_after_snapshot_restore.assert_called_once_with(torch.bfloat16)
-    impl.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
 
 
 def _make_runner(model, drafter_model):
@@ -207,6 +190,18 @@ def test_reload_derived_weights_uses_backend_specific_hook():
     rebuild_model_derived_tensors_after_snapshot_restore(_ImplHolder(target), torch.bfloat16, "model")
 
     assert target.reloaded
+
+
+def test_module_lifecycle_dispatches_module_before_impl():
+    calls = []
+    impl = MagicMock()
+    impl.reset_runtime_state_after_snapshot_restore.side_effect = lambda: calls.append("impl")
+    module = _ImplHolder(impl)
+    module.reset_runtime_state_after_snapshot_restore = lambda: calls.append("module")
+
+    reset_modules_runtime_state((module,))
+
+    assert calls == ["module", "impl"]
 
 
 def test_reload_derived_weights_propagates_failure():
