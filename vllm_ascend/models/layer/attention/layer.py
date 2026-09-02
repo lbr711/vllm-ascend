@@ -171,9 +171,9 @@ class DSAAttention(nn.Module, AttentionLayerBase):
         if callable(restore):
             restore(act_dtype)
 
-    def reset_after_snapshot_restore(self) -> None:
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
         """Forward the post-restore reset to the attention implementation."""
-        reset = getattr(self.impl, "reset_after_snapshot_restore", None)
+        reset = getattr(self.impl, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset):
             reset()
 

@@ -280,7 +280,7 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
         self.rope_dim = self.model_config.hf_text_config.qk_rope_head_dim
         self.enable_dsa_cp = enable_dsa_cp()
 
-    def reset_after_snapshot_restore(self) -> None:
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
         """Clear reusable request metadata after restore."""
         self.actual_seq_lengths_query.zero_()
         self.actual_seq_lengths_key.zero_()
@@ -879,7 +879,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         self.ctkv_scale = torch.tensor([1], dtype=act_dtype, device=device)
         self.q_nope_scale = torch.tensor([1], dtype=act_dtype, device=device)
 
-    def reset_after_snapshot_restore(self) -> None:
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
         if self.topk_indices_buffer is not None:
             self.topk_indices_buffer.fill_(-1)
         if self.preprocess_type == PreprocessType.PROLOG_V3 and self.enable_sparse_sfa_c8:

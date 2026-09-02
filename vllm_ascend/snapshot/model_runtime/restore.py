@@ -142,7 +142,7 @@ def _reset_attention_builders_after_restore(runner) -> None:
         if id(builder_or_mask) in seen_ids:
             continue
         seen_ids.add(id(builder_or_mask))
-        reset_state = getattr(builder_or_mask, "reset_after_snapshot_restore", None)
+        reset_state = getattr(builder_or_mask, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset_state):
             reset_state()
             reset_count += 1
@@ -164,7 +164,7 @@ def _reset_runner_input_runtime_state(runner) -> None:
     runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
     runner.input_batch.num_prompt_tokens_cpu_tensor.zero_()
     if runner.use_dcp:
-        runner.dcp_manager.reset_after_snapshot_restore()
+        runner.dcp_manager.reset_runtime_state_after_snapshot_restore()
 
     for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
         staged.gpu.fill_(0)

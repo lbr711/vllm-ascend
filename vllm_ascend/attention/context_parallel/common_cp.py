@@ -98,9 +98,9 @@ class DCPImplMixin:
         self.dcp_rank = self.dcp_group.rank_in_group
         self.dcp_device_group = self.dcp_group.device_group if self.dcp_size > 1 else None
 
-    def reset_after_snapshot_restore(self) -> None:
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
         self._refresh_dcp_group()
-        super().reset_after_snapshot_restore()
+        super().reset_runtime_state_after_snapshot_restore()
 
     def _dcp_all_gather(
         self,
