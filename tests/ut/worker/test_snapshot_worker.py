@@ -152,7 +152,7 @@ def test_parallel_group_clean_up_destroys_parallel_and_dist_env(
     mock_cleanup.assert_called_once()
 
 
-def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
+def test_rebuild_parallel_group_after_snapshot_restore_updates_init_method(worker):
     from vllm_ascend.snapshot.worker_lifecycle import _rebuild_parallel_groups
 
     worker.vllm_config.parallel_config.data_parallel_master_ip = "10.0.0.1"
@@ -200,7 +200,7 @@ def test_rebuild_parallel_group_after_resume_updates_init_method(worker):
     dispatcher.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
 
 
-def test_update_worker_info_after_resume_updates_env_and_master_ip(worker, monkeypatch):
+def test_update_worker_info_after_snapshot_restore_updates_env_and_master_ip(worker, monkeypatch):
     from vllm_ascend.snapshot.worker_lifecycle import _update_worker_info
 
     monkeypatch.delenv("HCCL_IF_IP", raising=False)
@@ -210,7 +210,7 @@ def test_update_worker_info_after_resume_updates_env_and_master_ip(worker, monke
     assert worker.vllm_config.parallel_config.data_parallel_master_ip == "10.0.0.9"
 
 
-def test_rebuild_kv_transfer_engine_after_resume_delegates_to_connector(worker):
+def test_rebuild_kv_transfer_engine_after_snapshot_restore_delegates_to_connector(worker):
     from vllm_ascend.snapshot.worker_lifecycle import _rebuild_kv_transfer_engine
 
     rebuild = MagicMock()
@@ -225,7 +225,7 @@ def test_rebuild_kv_transfer_engine_after_resume_delegates_to_connector(worker):
     rebuild.assert_called_once_with("10.0.0.8", None)
 
 
-def test_rebuild_kv_transfer_engine_after_resume_delegates_to_hybrid_connector(worker):
+def test_rebuild_kv_transfer_engine_after_snapshot_restore_delegates_to_hybrid_connector(worker):
     from vllm_ascend.snapshot.worker_lifecycle import _rebuild_kv_transfer_engine
 
     worker.vllm_config.kv_transfer_config.kv_connector = "MooncakeHybridConnector"
