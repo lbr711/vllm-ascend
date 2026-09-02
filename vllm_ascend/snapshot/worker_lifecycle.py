@@ -40,18 +40,31 @@ def _call_aclrt_snapshot_api(worker, api_name: str) -> None:
     api.restype = c_int
     result = api(os.getpid(), None)
     if result == 0:
-        logger.info("[snapshot] [worker] [rank:%s] %s success.", worker.rank, api_name)
+        logger.info(
+            "[snapshot][worker] runtime API completed: rank=%s api=%s",
+            worker.rank,
+            api_name,
+        )
     else:
-        logger.error("[snapshot] [worker] [rank:%s] %s failed %s.", worker.rank, api_name, result)
+        logger.error(
+            "[snapshot][worker] runtime API failed: rank=%s api=%s status=%s",
+            worker.rank,
+            api_name,
+            result,
+        )
 
 
 def _run_timed_steps(worker, steps) -> None:
     for step_name, step_fn in steps:
-        logger.info("[snapshot] [worker] rank %s: start %s", worker.rank, step_name)
+        logger.info(
+            "[snapshot][worker] step started: rank=%s step=%s",
+            worker.rank,
+            step_name,
+        )
         start = time.perf_counter()
         step_fn()
         logger.info(
-            "[snapshot] [worker] rank %s: %s cost %.2fs",
+            "[snapshot][worker] step completed: rank=%s step=%s duration=%.2f s",
             worker.rank,
             step_name,
             time.perf_counter() - start,
@@ -60,10 +73,10 @@ def _run_timed_steps(worker, steps) -> None:
 
 def suspend_worker(worker, model_save_path: str | None = None) -> None:
     steps = (
-        ("dump_model", lambda: dump_model_runner(worker.model_runner, model_save_path)),
-        ("gc.collect", gc.collect),
-        ("snapshot_process_lock", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")),
-        ("snapshot_process_backup", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),
+        ("dump_model_checkpoint", lambda: dump_model_runner(worker.model_runner, model_save_path)),
+        ("collect_garbage", gc.collect),
+        ("lock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")),
+        ("back_up_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),
     )
     _run_timed_steps(worker, steps)
 
@@ -80,17 +93,17 @@ def resume_worker(
     new_engine_id: str | None = None,
 ) -> None:
     steps = (
-        ("snapshot_process_restore", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessRestore")),
-        ("snapshot_process_unlock", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessUnlock")),
+        ("restore_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessRestore")),
+        ("unlock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessUnlock")),
         (
-            "update_worker_info_after_snapshot_restore",
+            "update_worker_network",
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
         ),
-        ("rebuild_parallel_group_after_snapshot_restore", lambda: _rebuild_parallel_groups(worker)),
-        ("re_load_weights", lambda: restore_model_runner(worker.model_runner, model_path)),
+        ("rebuild_parallel_groups", lambda: _rebuild_parallel_groups(worker)),
+        ("restore_model_checkpoint", lambda: restore_model_runner(worker.model_runner, model_path)),
         ("recapture_graph", lambda: _recapture_graph(worker)),
         (
-            "rebuild_kv_transfer_engine_after_snapshot_restore",
+            "rebuild_kv_transfer_endpoint",
             lambda: _rebuild_kv_transfer_engine(worker, local_ip, new_engine_id),
         ),
     )
@@ -101,9 +114,15 @@ def _parallel_group_cleanup(worker) -> None:
     snapshot_enabled = worker.vllm_config.snapshot_config is not None
     with snapshot_hccl_teardown(snapshot_enabled):
         destroy_ascend_model_parallel()
-        logger.info("[snapshot] [parallel] rank %s: destroy_ascend_model_parallel done", worker.rank)
+        logger.info(
+            "[snapshot][parallel] Ascend model-parallel groups destroyed: rank=%s",
+            worker.rank,
+        )
         cleanup_dist_env_for_snapshot()
-        logger.info("[snapshot] [parallel] rank %s: cleanup_dist_env_for_snapshot done", worker.rank)
+        logger.info(
+            "[snapshot][parallel] distributed environment cleaned up: rank=%s",
+            worker.rank,
+        )
 
 
 def _rebuild_parallel_groups(worker) -> None:
@@ -113,9 +132,15 @@ def _rebuild_parallel_groups(worker) -> None:
     dist.set_debug_level(dist.DebugLevel.INFO)
 
     rebuild_time_start = time.time()
-    logger.info("[snapshot] [parallel] rank %s: destroying HCCL and model-parallel groups", worker.rank)
+    logger.info(
+        "[snapshot][parallel] group rebuild started: rank=%s",
+        worker.rank,
+    )
     _parallel_group_cleanup(worker)
-    logger.info("[snapshot] [parallel] rank %s: rebuilding HCCL and model-parallel groups", worker.rank)
+    logger.info(
+        "[snapshot][parallel] initializing HCCL and model-parallel groups: rank=%s",
+        worker.rank,
+    )
 
     master_ip = worker.vllm_config.parallel_config.data_parallel_master_ip
     if not master_ip:
@@ -157,10 +182,13 @@ def _rebuild_parallel_groups(worker) -> None:
             reset_state = getattr(comm_method_or_dispatcher, "reset_runtime_state_after_snapshot_restore", None)
             if callable(reset_state):
                 reset_state()
-        logger.info("[snapshot] [parallel] rank %s: refreshed cached MoE parallel and HCCL groups", worker.rank)
+        logger.info(
+            "[snapshot][parallel] cached MoE and HCCL groups refreshed: rank=%s",
+            worker.rank,
+        )
 
     logger.info(
-        "[snapshot] [parallel] rank %s: rebuild_parallel_group cost %.2fs",
+        "[snapshot][parallel] group rebuild completed: rank=%s duration=%.2f s",
         worker.rank,
         time.time() - rebuild_time_start,
     )
@@ -170,7 +198,8 @@ def _update_worker_info(worker, local_ip: str, data_parallel_master_ip: str) -> 
     os.environ["HCCL_IF_IP"] = local_ip
     worker.vllm_config.parallel_config.data_parallel_master_ip = data_parallel_master_ip
     logger.info(
-        "[snapshot] [worker] rank %s: HCCL_IF_IP=%s data_parallel_master_ip=%s",
+        "[snapshot][worker] network configuration updated: "
+        "rank=%s local_ip=%s data_parallel_master_ip=%s",
         worker.rank,
         local_ip,
         data_parallel_master_ip,
@@ -190,7 +219,10 @@ def _rebuild_kv_transfer_engine(worker, local_ip: str, new_engine_id: str | None
 
 def _recapture_graph(worker) -> None:
     if worker.model_config.enforce_eager:
-        logger.info("[snapshot][worker] rank %s: enforce_eager is True, skip recapture graph", worker.rank)
+        logger.info(
+            "[snapshot][worker] graph recapture skipped: rank=%s reason=enforce_eager",
+            worker.rank,
+        )
         return
 
     from vllm_ascend.compilation.acl_graph import clear_all_aclgraph_entries, clear_graph_params_for_recapture

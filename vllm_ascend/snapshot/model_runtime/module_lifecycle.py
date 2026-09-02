@@ -46,13 +46,13 @@ def rebuild_model_derived_tensors_after_snapshot_restore(
         rebuilt_count += 1
 
     logger.info(
-        "[restore model] [%s] rebuilt non-persistent derived tensors for %d modules",
+        "[snapshot][model] derived tensors rebuilt: model=%s modules=%d",
         label,
         rebuilt_count,
     )
     if rebuilt_count == 0:
         logger.warning(
-            "[restore model] [%s] no derived-tensor rebuild targets found; "
-            "attention decode may still use stale derived tensors",
+            "[snapshot][model] no derived-tensor rebuild hooks found; "
+            "attention decode may use stale tensors: model=%s",
             label,
         )

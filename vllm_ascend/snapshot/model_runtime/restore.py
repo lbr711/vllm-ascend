@@ -147,7 +147,7 @@ def _reset_attention_builders_after_restore(runner) -> None:
             reset_state()
             reset_count += 1
     logger.info(
-        "[restore model] attention builder runtime reset: total=%d reset=%d",
+        "[snapshot][model] attention builder state reset: total=%d reset=%d",
         len(builders),
         reset_count,
     )
@@ -179,7 +179,7 @@ def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     """
     reset_count = reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
     logger.info(
-        "[restore model] reset runtime state for %d model modules",
+        "[snapshot][model] module runtime state reset: modules=%d",
         reset_count,
     )
 
@@ -196,6 +196,6 @@ def _reset_block_table_runtime_state(runner) -> None:
         buf.gpu.zero_()
         buf.cpu.zero_()
     logger.info(
-        "[restore model] zeroed %d block-table device tensor(s)",
+        "[snapshot][model] block-table buffers reset: tables=%d",
         len(block_tables),
     )

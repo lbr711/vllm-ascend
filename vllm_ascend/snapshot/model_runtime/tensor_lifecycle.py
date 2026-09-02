@@ -53,6 +53,6 @@ def restore_global_tensor_state(
     if reload_cos_and_sin_after_restore(model):
         restored.append("mla_rope.cos_sin")
     logger.info(
-        "[restore model] rebuilt global non-persistent state: %s",
-        restored if restored else "none",
+        "[snapshot][model] global tensors rebuilt: tensors=%s",
+        ",".join(restored) if restored else "none",
     )
