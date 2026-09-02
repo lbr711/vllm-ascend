@@ -179,7 +179,7 @@ def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     """
     reset_count = reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
     logger.info(
-        "[snapshot][model] module runtime state reset: modules=%d",
+        "[snapshot][model] module runtime state reset: hooks=%d",
         reset_count,
     )
 
