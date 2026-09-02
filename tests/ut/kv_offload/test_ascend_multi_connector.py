@@ -130,17 +130,19 @@ def test_layerwise_reuse_without_sink_keeps_provider_layer_entry_wait():
     assert call_order == ["provider", "sibling"]
 
 
-def test_rebuild_kv_transfer_endpoint_forwards_to_supported_sub_connectors():
+def test_rebuild_kv_transfer_endpoint_forwards_to_sub_connectors():
     rebuild = MagicMock()
+    noop_rebuild = MagicMock()
     connector = object.__new__(AscendMultiConnector)
     connector._connectors = [
         SimpleNamespace(rebuild_kv_transfer_endpoint=rebuild),
-        object(),
+        SimpleNamespace(rebuild_kv_transfer_endpoint=noop_rebuild),
     ]
 
     connector.rebuild_kv_transfer_endpoint("10.0.0.8", "engine-new")
 
     rebuild.assert_called_once_with("10.0.0.8", "engine-new")
+    noop_rebuild.assert_called_once_with("10.0.0.8", "engine-new")
 
 
 def test_pool_connector_rebuilds_after_other_connectors():

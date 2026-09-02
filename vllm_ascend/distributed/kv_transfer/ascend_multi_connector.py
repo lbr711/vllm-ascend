@@ -112,9 +112,7 @@ class AscendMultiConnector(MultiConnector, SupportsHMA):
             connector for connector in self._connectors if not isinstance(connector, AscendStoreConnector)
         ]
         for connector in other_connectors + pool_connectors:
-            rebuild = getattr(connector, "rebuild_kv_transfer_endpoint", None)
-            if callable(rebuild):
-                rebuild(local_ip, new_engine_id)
+            connector.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
     def update_state_after_alloc(self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int):
         chosen_connector = self._requests_to_connector.get(request.request_id, -1)
