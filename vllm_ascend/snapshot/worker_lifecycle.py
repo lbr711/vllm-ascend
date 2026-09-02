@@ -179,13 +179,7 @@ def _rebuild_kv_transfer_engine(worker, local_ip: str, new_engine_id: str | None
         return
     if not has_kv_transfer_group():
         return
-    rebuild = getattr(
-        get_kv_transfer_group(),
-        "rebuild_kv_transfer_endpoint",
-        None,
-    )
-    if callable(rebuild):
-        rebuild(local_ip, new_engine_id)
+    get_kv_transfer_group().rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
 
 def _recapture_graph(worker) -> None:
