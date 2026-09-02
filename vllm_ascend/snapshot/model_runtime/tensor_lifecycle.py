@@ -44,6 +44,11 @@ def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]
 
 
 def reset_runtime_tensor_state(owners: Iterable[object]) -> int:
+    """Run the snapshot reset hook for each distinct runtime-state owner.
+
+    Owners may be attention builders, model modules, or their implementation
+    objects. Each hook defines the transient tensors and metadata it owns.
+    """
     reset = 0
     seen_ids: set[int] = set()
     for owner in owners:
@@ -58,6 +63,11 @@ def reset_runtime_tensor_state(owners: Iterable[object]) -> int:
 
 
 def reset_model_runtime_tensor_state(models: Iterable[nn.Module | None]) -> int:
+    """Reset runtime state reachable from target and drafter model modules.
+
+    Both each ``nn.Module`` and its optional backend ``impl`` object are visited;
+    shared owners are reset only once.
+    """
     owners = (owner for model in models if model is not None for _, owner in _iter_derived_state_owners(model))
     return reset_runtime_tensor_state(owners)
 
