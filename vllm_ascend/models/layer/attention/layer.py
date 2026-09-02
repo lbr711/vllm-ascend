@@ -165,6 +165,18 @@ class DSAAttention(nn.Module, AttentionLayerBase):
     ) -> torch.Tensor:
         return q
 
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+        """Forward derived-state restoration to the attention implementation."""
+        restore = getattr(self.impl, "restore_snapshot_derived_state", None)
+        if callable(restore):
+            restore(act_dtype)
+
+    def reset_snapshot_runtime_state(self) -> None:
+        """Forward runtime-state reset to the attention implementation."""
+        reset = getattr(self.impl, "reset_snapshot_runtime_state", None)
+        if callable(reset):
+            reset()
+
     def process_weights_after_loading(self, act_dtype: torch.dtype):
         if hasattr(self.impl, "process_weights_after_loading"):
             self.impl.process_weights_after_loading(act_dtype)

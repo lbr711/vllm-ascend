@@ -174,13 +174,12 @@ def _reset_runner_input_runtime_state(runner) -> None:
 def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     """Reset reusable runtime state owned by target and drafter modules.
 
-    Module hooks refresh communication-group references and expert mappings,
-    clear reusable attention/MoE tensors, and mark quantization state that must
-    be prepared again on the next forward pass.
+    Modules refresh their own state and forward the hook to backend
+    implementations they own.
     """
     reset_count = reset_model_modules_after_restore((runner.get_model(), get_drafter_model(runner)))
     logger.info(
-        "[restore model] reset runtime state for %d model module/impl objects",
+        "[restore model] reset runtime state for %d model modules",
         reset_count,
     )
 

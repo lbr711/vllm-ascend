@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+from vllm_ascend.models.layer.attention.layer import DSAAttention
 from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_table_runtime_state,
     _reset_runner_input_runtime_state,
@@ -27,9 +28,13 @@ class _TopKHolder(torch.nn.Module):
 class _BackendSpecificReloadTarget:
     def __init__(self) -> None:
         self.reloaded = False
+        self.runtime_reset = False
 
     def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
         self.reloaded = True
+
+    def reset_snapshot_runtime_state(self) -> None:
+        self.runtime_reset = True
 
 
 class _ImplHolder(torch.nn.Module):
@@ -37,10 +42,27 @@ class _ImplHolder(torch.nn.Module):
         super().__init__()
         self.impl = impl
 
+    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+        self.impl.restore_snapshot_derived_state(act_dtype)
+
+    def reset_snapshot_runtime_state(self) -> None:
+        self.impl.reset_snapshot_runtime_state()
+
 
 class _FailingReloadTarget:
     def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
         raise RuntimeError("restore failed")
+
+
+def test_dsa_snapshot_hooks_are_forwarded_to_impl():
+    impl = MagicMock()
+    layer = SimpleNamespace(impl=impl)
+
+    DSAAttention.restore_snapshot_derived_state(layer, torch.bfloat16)
+    DSAAttention.reset_snapshot_runtime_state(layer)
+
+    impl.restore_snapshot_derived_state.assert_called_once_with(torch.bfloat16)
+    impl.reset_snapshot_runtime_state.assert_called_once_with()
 
 
 def _make_runner(model, drafter_model):
@@ -163,6 +185,8 @@ def test_reset_target_and_drafter_modules_after_restore():
     shared_topk = torch.full((4, 8), 23, dtype=torch.int32)
     model = _TopKHolder(shared_topk)
     model.child = _TopKHolder(shared_topk)
+    backend = _BackendSpecificReloadTarget()
+    model.backend = _ImplHolder(backend)
     drafter = _TopKHolder(shared_topk)
     runner = SimpleNamespace(
         get_model=lambda: model,
@@ -172,6 +196,7 @@ def test_reset_target_and_drafter_modules_after_restore():
     _reset_target_and_drafter_modules_after_restore(runner)
 
     assert torch.all(shared_topk == -1)
+    assert backend.runtime_reset
 
 
 def test_reload_derived_weights_uses_backend_specific_hook():

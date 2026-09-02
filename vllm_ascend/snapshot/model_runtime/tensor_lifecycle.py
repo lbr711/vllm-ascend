@@ -2,7 +2,7 @@
 
 """Persistent, derived, and transient tensor lifecycle helpers."""
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 
 import torch
 import torch.nn as nn
@@ -33,32 +33,22 @@ def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) ->
     return module._buffers[name]
 
 
-def _iter_model_modules_and_impls(model: nn.Module) -> Iterator[tuple[str, object]]:
-    seen_ids: set[int] = set()
-    for name, module in model.named_modules():
-        for suffix, module_or_impl in (("", module), (".impl", getattr(module, "impl", None))):
-            if module_or_impl is None or id(module_or_impl) in seen_ids:
-                continue
-            seen_ids.add(id(module_or_impl))
-            yield f"{name}{suffix}", module_or_impl
-
-
 def reset_model_modules_after_restore(models: Iterable[nn.Module | None]) -> int:
-    """Reset target/drafter modules and their backend implementation objects.
+    """Reset target and drafter modules after snapshot restore.
 
-    Both each ``nn.Module`` and its optional backend ``impl`` object are visited;
-    shared objects are reset only once.
+    A module that owns a backend implementation is responsible for forwarding
+    the hook to that implementation. Shared modules are reset only once.
     """
     reset_count = 0
     reset_ids: set[int] = set()
     for model in models:
         if model is None:
             continue
-        for _, module_or_impl in _iter_model_modules_and_impls(model):
-            if id(module_or_impl) in reset_ids:
+        for module in model.modules():
+            if id(module) in reset_ids:
                 continue
-            reset_ids.add(id(module_or_impl))
-            reset_state = getattr(module_or_impl, "reset_snapshot_runtime_state", None)
+            reset_ids.add(id(module))
+            reset_state = getattr(module, "reset_snapshot_runtime_state", None)
             if callable(reset_state):
                 reset_state()
                 reset_count += 1
@@ -68,8 +58,8 @@ def reset_model_modules_after_restore(models: Iterable[nn.Module | None]) -> int
 def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label: str) -> None:
     restored = 0
 
-    for _, module_or_impl in _iter_model_modules_and_impls(model):
-        restore = getattr(module_or_impl, "restore_snapshot_derived_state", None)
+    for module in model.modules():
+        restore = getattr(module, "restore_snapshot_derived_state", None)
         if not callable(restore):
             continue
         restore(act_dtype)
