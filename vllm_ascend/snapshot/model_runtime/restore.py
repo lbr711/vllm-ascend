@@ -93,7 +93,8 @@ def _restore_model_runner_runtime_state(runner, model: nn.Module) -> None:
     _reset_spec_decode_runtime_state(runner)
     _restore_drafter_runtime_state(runner)
     _reset_attention_builder_runtime_state(runner)
-    _reset_runner_and_model_runtime_tensors(runner)
+    _reset_runner_input_runtime_state(runner)
+    _reset_model_module_runtime_state(runner)
     _reset_block_table_runtime_state(runner)
 
 
@@ -128,8 +129,8 @@ def _reset_attention_builder_runtime_state(runner) -> None:
     )
 
 
-def _reset_runner_and_model_runtime_tensors(runner) -> None:
-    """Reset runner staging buffers and model-owned reusable runtime tensors."""
+def _reset_runner_input_runtime_state(runner) -> None:
+    """Reset request and staging state owned directly by the model runner."""
     runner.positions.zero_()
     runner._positions_cpu_buf.zero_()
     runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
@@ -141,6 +142,9 @@ def _reset_runner_and_model_runtime_tensors(runner) -> None:
         staged.gpu.fill_(0)
         staged.cpu.fill_(0)
 
+
+def _reset_model_module_runtime_state(runner) -> None:
+    """Reset reusable runtime state owned by target and drafter modules."""
     reset = reset_model_runtime_tensor_state((runner.get_model(), get_drafter_model(runner)))
     logger.info(
         "[restore model] reset model-owned runtime tensor state for %d owners",

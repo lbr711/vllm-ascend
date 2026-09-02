@@ -6,7 +6,8 @@ import torch
 
 from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_table_runtime_state,
-    _reset_runner_and_model_runtime_tensors,
+    _reset_model_module_runtime_state,
+    _reset_runner_input_runtime_state,
     _restore_model_runner_runtime_state,
     dump_model_runner,
     restore_model_runner,
@@ -102,7 +103,8 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_spec_decode_runtime_state") as reset_spec,
         patch("vllm_ascend.snapshot.model_runtime.restore._restore_drafter_runtime_state") as restore_drafter,
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builder_runtime_state") as reset_attention,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_and_model_runtime_tensors") as reset_tensors,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_input_runtime_state") as reset_runner,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_model_module_runtime_state") as reset_modules,
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_block_table_runtime_state") as reset_block_table,
     ):
         _restore_model_runner_runtime_state(runner, model)
@@ -111,11 +113,12 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
     reset_spec.assert_called_once_with(runner)
     restore_drafter.assert_called_once_with(runner)
     reset_attention.assert_called_once_with(runner)
-    reset_tensors.assert_called_once_with(runner)
+    reset_runner.assert_called_once_with(runner)
+    reset_modules.assert_called_once_with(runner)
     reset_block_table.assert_called_once_with(runner)
 
 
-def test_reset_resume_runtime_tensor_states_clears_shared_state():
+def test_reset_runner_input_runtime_state():
     runner = SimpleNamespace()
     runner.use_dcp = True
     runner.dcp_manager = MagicMock()
@@ -138,14 +141,7 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
         cpu=torch.full((4,), 17, dtype=torch.int32),
     )
 
-    shared_topk = torch.full((4, 8), 23, dtype=torch.int32)
-    model = _TopKHolder(shared_topk)
-    model.child = _TopKHolder(shared_topk)
-    drafter = _TopKHolder(shared_topk)
-    runner.get_model = lambda: model
-    runner.drafter = SimpleNamespace(model=drafter)
-
-    _reset_runner_and_model_runtime_tensors(runner)
+    _reset_runner_input_runtime_state(runner)
 
     for staged in (
         runner.group_len,
@@ -158,8 +154,22 @@ def test_reset_resume_runtime_tensor_states_clears_shared_state():
     assert torch.count_nonzero(runner._positions_cpu_buf) == 0
     assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
     assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
-    assert torch.all(shared_topk == -1)
     runner.dcp_manager.reset_snapshot_runtime_state.assert_called_once_with()
+
+
+def test_reset_model_module_runtime_state():
+    shared_topk = torch.full((4, 8), 23, dtype=torch.int32)
+    model = _TopKHolder(shared_topk)
+    model.child = _TopKHolder(shared_topk)
+    drafter = _TopKHolder(shared_topk)
+    runner = SimpleNamespace(
+        get_model=lambda: model,
+        drafter=SimpleNamespace(model=drafter),
+    )
+
+    _reset_model_module_runtime_state(runner)
+
+    assert torch.all(shared_topk == -1)
 
 
 def test_reload_derived_weights_uses_backend_specific_hook():
