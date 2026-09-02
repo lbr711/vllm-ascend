@@ -6,8 +6,8 @@ import torch
 
 from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_table_runtime_state,
-    _reset_model_module_runtime_state,
     _reset_runner_input_runtime_state,
+    _reset_target_and_drafter_modules_after_restore,
     _restore_model_runner_runtime_state,
     dump_model_runner,
     restore_model_runner,
@@ -102,9 +102,11 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
         patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state") as restore_global,
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_spec_decode_runtime_state") as reset_spec,
         patch("vllm_ascend.snapshot.model_runtime.restore._restore_drafter_runtime_state") as restore_drafter,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builder_runtime_state") as reset_attention,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builders_after_restore") as reset_attention,
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_input_runtime_state") as reset_runner,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_model_module_runtime_state") as reset_modules,
+        patch(
+            "vllm_ascend.snapshot.model_runtime.restore._reset_target_and_drafter_modules_after_restore"
+        ) as reset_modules,
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_block_table_runtime_state") as reset_block_table,
     ):
         _restore_model_runner_runtime_state(runner, model)
@@ -157,7 +159,7 @@ def test_reset_runner_input_runtime_state():
     runner.dcp_manager.reset_snapshot_runtime_state.assert_called_once_with()
 
 
-def test_reset_model_module_runtime_state():
+def test_reset_target_and_drafter_modules_after_restore():
     shared_topk = torch.full((4, 8), 23, dtype=torch.int32)
     model = _TopKHolder(shared_topk)
     model.child = _TopKHolder(shared_topk)
@@ -167,7 +169,7 @@ def test_reset_model_module_runtime_state():
         drafter=SimpleNamespace(model=drafter),
     )
 
-    _reset_model_module_runtime_state(runner)
+    _reset_target_and_drafter_modules_after_restore(runner)
 
     assert torch.all(shared_topk == -1)
 

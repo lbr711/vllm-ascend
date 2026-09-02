@@ -9,8 +9,7 @@ from vllm.logger import logger
 
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
-    invoke_reset_hooks_for_model_modules,
-    invoke_reset_hooks_for_owners,
+    reset_model_modules_after_restore,
     restore_derived_tensor_state,
     restore_global_tensor_state,
 )
@@ -96,9 +95,9 @@ def _restore_model_runner_runtime_state(runner, model: nn.Module) -> None:
     restore_global_tensor_state(model, runner.model_config.hf_config, runner.device)
     _reset_spec_decode_runtime_state(runner)
     _restore_drafter_runtime_state(runner)
-    _reset_attention_builder_runtime_state(runner)
+    _reset_attention_builders_after_restore(runner)
     _reset_runner_input_runtime_state(runner)
-    _reset_model_module_runtime_state(runner)
+    _reset_target_and_drafter_modules_after_restore(runner)
     _reset_block_table_runtime_state(runner)
 
 
@@ -122,7 +121,7 @@ def _reset_spec_decode_runtime_state(runner) -> None:
         input_batch.prev_req_id_to_index = None
 
 
-def _reset_attention_builder_runtime_state(runner) -> None:
+def _reset_attention_builders_after_restore(runner) -> None:
     """Reset per-iteration metadata cached by attention builders.
 
     Builder hooks clear request sequence lengths, block/slot mappings, context
@@ -134,8 +133,19 @@ def _reset_attention_builder_runtime_state(runner) -> None:
         for attn_group in kv_groups
         for builder in attn_group.metadata_builders
     ]
-    owners = builders + [builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")]
-    reset_count = invoke_reset_hooks_for_owners(owners)
+    builders_and_masks = builders + [
+        builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")
+    ]
+    reset_count = 0
+    seen_ids: set[int] = set()
+    for builder_or_mask in builders_and_masks:
+        if id(builder_or_mask) in seen_ids:
+            continue
+        seen_ids.add(id(builder_or_mask))
+        reset_state = getattr(builder_or_mask, "reset_snapshot_runtime_state", None)
+        if callable(reset_state):
+            reset_state()
+            reset_count += 1
     logger.info(
         "[restore model] attention builder runtime reset: total=%d reset=%d",
         len(builders),
@@ -161,16 +171,16 @@ def _reset_runner_input_runtime_state(runner) -> None:
         staged.cpu.fill_(0)
 
 
-def _reset_model_module_runtime_state(runner) -> None:
+def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     """Reset reusable runtime state owned by target and drafter modules.
 
     Module hooks refresh communication-group references and expert mappings,
     clear reusable attention/MoE tensors, and mark quantization state that must
     be prepared again on the next forward pass.
     """
-    reset_count = invoke_reset_hooks_for_model_modules((runner.get_model(), get_drafter_model(runner)))
+    reset_count = reset_model_modules_after_restore((runner.get_model(), get_drafter_model(runner)))
     logger.info(
-        "[restore model] reset model-owned runtime tensor state for %d owners",
+        "[restore model] reset runtime state for %d model module/impl objects",
         reset_count,
     )
 
