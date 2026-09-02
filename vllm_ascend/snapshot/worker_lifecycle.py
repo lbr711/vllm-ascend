@@ -16,7 +16,6 @@ from vllm.utils.network_utils import get_distributed_init_method
 from vllm_ascend.distributed.parallel_state import destroy_ascend_model_parallel
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
 from vllm_ascend.snapshot.model_runtime.restore import dump_model_runner, restore_model_runner
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import invoke_reset_hooks_for_owners
 
 _ACL_RT_LIB: CDLL | None = None
 
@@ -134,7 +133,7 @@ def _rebuild_parallel_groups(worker) -> None:
         from vllm_ascend.distributed.parallel_state import get_mc2_group
         from vllm_ascend.ops.fused_moe.moe_comm_method import _MoECommMethods
 
-        snapshot_state_owners = []
+        moe_comm_methods_and_dispatchers = []
         for comm_method in _MoECommMethods.values():
             moe_config = getattr(comm_method, "moe_config", None)
             if moe_config is not None:
@@ -145,12 +144,19 @@ def _rebuild_parallel_groups(worker) -> None:
                     moe_config.mc2_group = get_mc2_group()
 
             dispatcher = getattr(comm_method, "token_dispatcher", None)
-            snapshot_state_owners.extend((comm_method, dispatcher))
+            moe_comm_methods_and_dispatchers.extend((comm_method, dispatcher))
             refresh_fn = getattr(dispatcher, "refresh_hccl_group", None)
             if callable(refresh_fn):
                 refresh_fn()
 
-        invoke_reset_hooks_for_owners(snapshot_state_owners)
+        reset_ids: set[int] = set()
+        for comm_method_or_dispatcher in moe_comm_methods_and_dispatchers:
+            if comm_method_or_dispatcher is None or id(comm_method_or_dispatcher) in reset_ids:
+                continue
+            reset_ids.add(id(comm_method_or_dispatcher))
+            reset_state = getattr(comm_method_or_dispatcher, "reset_snapshot_runtime_state", None)
+            if callable(reset_state):
+                reset_state()
         logger.info("[snapshot] [parallel] rank %s: refreshed cached MoE parallel and HCCL groups", worker.rank)
 
     logger.info(

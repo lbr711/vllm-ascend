@@ -33,50 +33,43 @@ def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) ->
     return module._buffers[name]
 
 
-def _iter_model_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
+def _iter_model_modules_and_impls(model: nn.Module) -> Iterator[tuple[str, object]]:
     seen_ids: set[int] = set()
     for name, module in model.named_modules():
-        for suffix, owner in (("", module), (".impl", getattr(module, "impl", None))):
-            if owner is None or id(owner) in seen_ids:
+        for suffix, module_or_impl in (("", module), (".impl", getattr(module, "impl", None))):
+            if module_or_impl is None or id(module_or_impl) in seen_ids:
                 continue
-            seen_ids.add(id(owner))
-            yield f"{name}{suffix}", owner
+            seen_ids.add(id(module_or_impl))
+            yield f"{name}{suffix}", module_or_impl
 
 
-def invoke_reset_hooks_for_owners(owners: Iterable[object]) -> int:
-    """Run the snapshot reset hook for each distinct runtime-state owner.
-
-    Owners may be attention builders, model modules, or their implementation
-    objects. Each hook defines the transient tensors and metadata it owns.
-    """
-    reset_count = 0
-    seen_ids: set[int] = set()
-    for owner in owners:
-        if id(owner) in seen_ids:
-            continue
-        seen_ids.add(id(owner))
-        reset_state = getattr(owner, "reset_snapshot_runtime_state", None)
-        if callable(reset_state):
-            reset_state()
-            reset_count += 1
-    return reset_count
-
-
-def invoke_reset_hooks_for_model_modules(models: Iterable[nn.Module | None]) -> int:
-    """Reset runtime state reachable from target and drafter model modules.
+def reset_model_modules_after_restore(models: Iterable[nn.Module | None]) -> int:
+    """Reset target/drafter modules and their backend implementation objects.
 
     Both each ``nn.Module`` and its optional backend ``impl`` object are visited;
-    shared owners are reset only once.
+    shared objects are reset only once.
     """
-    owners = (owner for model in models if model is not None for _, owner in _iter_model_state_owners(model))
-    return invoke_reset_hooks_for_owners(owners)
+    reset_count = 0
+    reset_ids: set[int] = set()
+    for model in models:
+        if model is None:
+            continue
+        for _, module_or_impl in _iter_model_modules_and_impls(model):
+            if id(module_or_impl) in reset_ids:
+                continue
+            reset_ids.add(id(module_or_impl))
+            reset_state = getattr(module_or_impl, "reset_snapshot_runtime_state", None)
+            if callable(reset_state):
+                reset_state()
+                reset_count += 1
+    return reset_count
 
 
 def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label: str) -> None:
     restored = 0
 
-    for _, owner in _iter_model_state_owners(model):
-        restore = getattr(owner, "restore_snapshot_derived_state", None)
+    for _, module_or_impl in _iter_model_modules_and_impls(model):
+        restore = getattr(module_or_impl, "restore_snapshot_derived_state", None)
         if not callable(restore):
             continue
         restore(act_dtype)
