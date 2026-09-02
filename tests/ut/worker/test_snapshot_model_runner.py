@@ -5,6 +5,9 @@ import pytest
 import torch
 
 from vllm_ascend.models.layer.attention.layer import DSAAttention
+from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
+    rebuild_model_derived_tensors_after_snapshot_restore,
+)
 from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_table_runtime_state,
     _reset_runner_input_runtime_state,
@@ -13,7 +16,6 @@ from vllm_ascend.snapshot.model_runtime.restore import (
     dump_model_runner,
     restore_model_runner,
 )
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_derived_tensor_state
 
 
 class _TopKHolder(torch.nn.Module):
@@ -202,14 +204,14 @@ def test_reset_target_and_drafter_modules_after_restore():
 def test_reload_derived_weights_uses_backend_specific_hook():
     target = _BackendSpecificReloadTarget()
 
-    restore_derived_tensor_state(_ImplHolder(target), torch.bfloat16, "model")
+    rebuild_model_derived_tensors_after_snapshot_restore(_ImplHolder(target), torch.bfloat16, "model")
 
     assert target.reloaded
 
 
 def test_reload_derived_weights_propagates_failure():
     with pytest.raises(RuntimeError, match="restore failed"):
-        restore_derived_tensor_state(
+        rebuild_model_derived_tensors_after_snapshot_restore(
             _ImplHolder(_FailingReloadTarget()),
             torch.bfloat16,
             "model",
