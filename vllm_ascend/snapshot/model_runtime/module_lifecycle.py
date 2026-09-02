@@ -9,8 +9,8 @@ import torch.nn as nn
 from vllm.logger import logger
 
 
-def reset_model_modules_after_snapshot_restore(models: Iterable[nn.Module | None]) -> int:
-    """Reset target and drafter modules after snapshot restore.
+def reset_modules_runtime_state(models: Iterable[nn.Module | None]) -> int:
+    """Reset runtime state held by target and drafter model modules.
 
     A module that owns a backend implementation is responsible for forwarding
     the hook to that implementation. Shared modules are reset only once.

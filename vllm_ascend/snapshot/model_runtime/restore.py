@@ -10,7 +10,7 @@ from vllm.logger import logger
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
     rebuild_model_derived_tensors_after_snapshot_restore,
-    reset_model_modules_after_snapshot_restore,
+    reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_global_tensor_state
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
@@ -177,7 +177,7 @@ def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     Modules refresh their own state and forward the hook to backend
     implementations they own.
     """
-    reset_count = reset_model_modules_after_snapshot_restore((runner.get_model(), get_drafter_model(runner)))
+    reset_count = reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
     logger.info(
         "[restore model] reset runtime state for %d model modules",
         reset_count,
