@@ -150,7 +150,7 @@ def test_generate_dcp_mtp_input_fills_query_start_loc_tail() -> None:
     manager.query_start_loc_full.copy_to_gpu.assert_called_once_with()
 
 
-def test_reset_snapshot_runtime_state_clears_request_state() -> None:
+def test_reset_transient_state_after_snapshot_restore_clears_request_state() -> None:
     manager = object.__new__(DCPManager)
     manager.max_num_reqs = 4
     manager.device = torch.device("cpu")
@@ -169,7 +169,7 @@ def test_reset_snapshot_runtime_state_clears_request_state() -> None:
     manager.async_rebuild_num_tokens = 4
     manager.long_seq_metadata = object()
 
-    manager.reset_snapshot_runtime_state()
+    manager.reset_transient_state_after_snapshot_restore()
 
     assert manager.num_reqs == 0
     assert manager.num_decode_reqs == 0

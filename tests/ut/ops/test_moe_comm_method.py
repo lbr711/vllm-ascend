@@ -112,11 +112,11 @@ class TestMoECommMethod(TestBase):
         self.assertEqual(call_args.kwargs["max_recv_token_num"], 1024)
         mock_warning_once.assert_not_called()
 
-    def test_fused_mc2_reset_snapshot_runtime_state_releases_symm_buffer(self):
+    def test_fused_mc2_reset_transient_state_after_snapshot_restore_releases_symm_buffer(self):
         comm_impl = object.__new__(FusedMC2CommImpl)
         comm_impl._mega_moe_symm_buffer = object()
 
-        comm_impl.reset_snapshot_runtime_state()
+        comm_impl.reset_transient_state_after_snapshot_restore()
 
         self.assertIsNone(comm_impl._mega_moe_symm_buffer)
 

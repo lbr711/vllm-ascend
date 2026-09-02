@@ -280,7 +280,7 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
         self.rope_dim = self.model_config.hf_text_config.qk_rope_head_dim
         self.enable_dsa_cp = enable_dsa_cp()
 
-    def reset_snapshot_runtime_state(self) -> None:
+    def reset_transient_state_after_snapshot_restore(self) -> None:
         """Clear reusable request metadata after restore."""
         self.actual_seq_lengths_query.zero_()
         self.actual_seq_lengths_key.zero_()
@@ -879,7 +879,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         self.ctkv_scale = torch.tensor([1], dtype=act_dtype, device=device)
         self.q_nope_scale = torch.tensor([1], dtype=act_dtype, device=device)
 
-    def reset_snapshot_runtime_state(self) -> None:
+    def reset_transient_state_after_snapshot_restore(self) -> None:
         if self.topk_indices_buffer is not None:
             self.topk_indices_buffer.fill_(-1)
         if self.preprocess_type == PreprocessType.PROLOG_V3 and self.enable_sparse_sfa_c8:
@@ -894,7 +894,7 @@ class AscendSFAImpl(MLAAttentionImpl):
                 device=self.weight_dq.device,
             )
 
-    def restore_snapshot_derived_state(self, act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
         """Rebind or rebuild decode weights derived outside ``state_dict``."""
         if not self._rebind_absorbed_weight_buffers():
             raise RuntimeError(f"SFA layer {self.layer_name}: absorbed weight buffers are missing after restore")
