@@ -9,8 +9,8 @@ from vllm.logger import logger
 
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
-    invoke_model_snapshot_runtime_reset_hooks,
-    invoke_snapshot_runtime_reset_hooks,
+    invoke_reset_hooks_for_model_modules,
+    invoke_reset_hooks_for_owners,
     restore_derived_tensor_state,
     restore_global_tensor_state,
 )
@@ -135,7 +135,7 @@ def _reset_attention_builder_runtime_state(runner) -> None:
         for builder in attn_group.metadata_builders
     ]
     owners = builders + [builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")]
-    reset_count = invoke_snapshot_runtime_reset_hooks(owners)
+    reset_count = invoke_reset_hooks_for_owners(owners)
     logger.info(
         "[restore model] attention builder runtime reset: total=%d reset=%d",
         len(builders),
@@ -168,7 +168,7 @@ def _reset_model_module_runtime_state(runner) -> None:
     clear reusable attention/MoE tensors, and mark quantization state that must
     be prepared again on the next forward pass.
     """
-    reset_count = invoke_model_snapshot_runtime_reset_hooks((runner.get_model(), get_drafter_model(runner)))
+    reset_count = invoke_reset_hooks_for_model_modules((runner.get_model(), get_drafter_model(runner)))
     logger.info(
         "[restore model] reset model-owned runtime tensor state for %d owners",
         reset_count,
