@@ -83,14 +83,14 @@ def resume_worker(
         ("snapshot_process_restore", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessRestore")),
         ("snapshot_process_unlock", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessUnlock")),
         (
-            "update_worker_info_after_resume",
+            "update_worker_info_after_snapshot_restore",
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
         ),
-        ("rebuild_parallel_group_after_resume", lambda: _rebuild_parallel_groups(worker)),
+        ("rebuild_parallel_group_after_snapshot_restore", lambda: _rebuild_parallel_groups(worker)),
         ("re_load_weights", lambda: restore_model_runner(worker.model_runner, model_path)),
         ("recapture_graph", lambda: _recapture_graph(worker)),
         (
-            "rebuild_kv_transfer_engine_after_resume",
+            "rebuild_kv_transfer_engine_after_snapshot_restore",
             lambda: _rebuild_kv_transfer_engine(worker, local_ip, new_engine_id),
         ),
     )
