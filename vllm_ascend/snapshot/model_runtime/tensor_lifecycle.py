@@ -33,7 +33,7 @@ def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) ->
     return module._buffers[name]
 
 
-def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
+def _iter_model_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
     seen_ids: set[int] = set()
     for name, module in model.named_modules():
         for suffix, owner in (("", module), (".impl", getattr(module, "impl", None))):
@@ -43,13 +43,13 @@ def _iter_derived_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]
             yield f"{name}{suffix}", owner
 
 
-def reset_runtime_tensor_state(owners: Iterable[object]) -> int:
+def invoke_snapshot_runtime_reset_hooks(owners: Iterable[object]) -> int:
     """Run the snapshot reset hook for each distinct runtime-state owner.
 
     Owners may be attention builders, model modules, or their implementation
     objects. Each hook defines the transient tensors and metadata it owns.
     """
-    reset = 0
+    reset_count = 0
     seen_ids: set[int] = set()
     for owner in owners:
         if id(owner) in seen_ids:
@@ -58,24 +58,24 @@ def reset_runtime_tensor_state(owners: Iterable[object]) -> int:
         reset_state = getattr(owner, "reset_snapshot_runtime_state", None)
         if callable(reset_state):
             reset_state()
-            reset += 1
-    return reset
+            reset_count += 1
+    return reset_count
 
 
-def reset_model_runtime_tensor_state(models: Iterable[nn.Module | None]) -> int:
+def invoke_model_snapshot_runtime_reset_hooks(models: Iterable[nn.Module | None]) -> int:
     """Reset runtime state reachable from target and drafter model modules.
 
     Both each ``nn.Module`` and its optional backend ``impl`` object are visited;
     shared owners are reset only once.
     """
-    owners = (owner for model in models if model is not None for _, owner in _iter_derived_state_owners(model))
-    return reset_runtime_tensor_state(owners)
+    owners = (owner for model in models if model is not None for _, owner in _iter_model_state_owners(model))
+    return invoke_snapshot_runtime_reset_hooks(owners)
 
 
 def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label: str) -> None:
     restored = 0
 
-    for _, owner in _iter_derived_state_owners(model):
+    for _, owner in _iter_model_state_owners(model):
         restore = getattr(owner, "restore_snapshot_derived_state", None)
         if not callable(restore):
             continue
