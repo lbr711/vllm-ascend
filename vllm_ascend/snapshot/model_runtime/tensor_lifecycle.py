@@ -43,7 +43,7 @@ def _iter_model_state_owners(model: nn.Module) -> Iterator[tuple[str, object]]:
             yield f"{name}{suffix}", owner
 
 
-def invoke_snapshot_runtime_reset_hooks(owners: Iterable[object]) -> int:
+def invoke_reset_hooks_for_owners(owners: Iterable[object]) -> int:
     """Run the snapshot reset hook for each distinct runtime-state owner.
 
     Owners may be attention builders, model modules, or their implementation
@@ -62,14 +62,14 @@ def invoke_snapshot_runtime_reset_hooks(owners: Iterable[object]) -> int:
     return reset_count
 
 
-def invoke_model_snapshot_runtime_reset_hooks(models: Iterable[nn.Module | None]) -> int:
+def invoke_reset_hooks_for_model_modules(models: Iterable[nn.Module | None]) -> int:
     """Reset runtime state reachable from target and drafter model modules.
 
     Both each ``nn.Module`` and its optional backend ``impl`` object are visited;
     shared owners are reset only once.
     """
     owners = (owner for model in models if model is not None for _, owner in _iter_model_state_owners(model))
-    return invoke_snapshot_runtime_reset_hooks(owners)
+    return invoke_reset_hooks_for_owners(owners)
 
 
 def restore_derived_tensor_state(model: nn.Module, act_dtype: torch.dtype, label: str) -> None:
