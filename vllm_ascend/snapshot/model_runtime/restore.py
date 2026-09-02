@@ -88,7 +88,11 @@ def restore_model_runner(runner, path: str = "/mnt") -> None:
 
 
 def _restore_model_runner_runtime_state(runner, model: nn.Module) -> None:
-    """Restore rebuildable state and clear pre-snapshot runtime carry-over."""
+    """Prepare all non-checkpoint model-runner state for post-restore inference.
+
+    This includes global derived tensors, speculative-decoding state, attention
+    metadata, runner input buffers, model-module runtime state, and block tables.
+    """
     restore_global_tensor_state(model, runner.model_config.hf_config, runner.device)
     _reset_spec_decode_runtime_state(runner)
     _restore_drafter_runtime_state(runner)
@@ -104,6 +108,11 @@ def _restore_drafter_runtime_state(runner) -> None:
 
 
 def _reset_spec_decode_runtime_state(runner) -> None:
+    """Clear request carry-over owned by speculative decoding.
+
+    The state consists of cached draft request IDs, draft token IDs, and the
+    previous request-to-batch-index mapping. The next request rebuilds all three.
+    """
     if hasattr(runner, "_draft_token_req_ids"):
         runner._draft_token_req_ids = None
     if hasattr(runner, "_draft_token_ids"):
@@ -114,6 +123,11 @@ def _reset_spec_decode_runtime_state(runner) -> None:
 
 
 def _reset_attention_builder_runtime_state(runner) -> None:
+    """Reset per-iteration metadata cached by attention builders.
+
+    Builder hooks clear request sequence lengths, block/slot mappings, context
+    chunk metadata, attention-mask caches, and context-parallel staging tensors.
+    """
     builders = [
         builder
         for kv_groups in runner.attn_groups
@@ -130,7 +144,11 @@ def _reset_attention_builder_runtime_state(runner) -> None:
 
 
 def _reset_runner_input_runtime_state(runner) -> None:
-    """Reset request and staging state owned directly by the model runner."""
+    """Reset request and staging state owned directly by the model runner.
+
+    The state includes Host/NPU position buffers, Host token counters, DCP
+    request metadata, and the Host/NPU MoE group staging buffers.
+    """
     runner.positions.zero_()
     runner._positions_cpu_buf.zero_()
     runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
@@ -144,7 +162,12 @@ def _reset_runner_input_runtime_state(runner) -> None:
 
 
 def _reset_model_module_runtime_state(runner) -> None:
-    """Reset reusable runtime state owned by target and drafter modules."""
+    """Reset reusable runtime state owned by target and drafter modules.
+
+    Module hooks refresh communication-group references and expert mappings,
+    clear reusable attention/MoE tensors, and mark quantization state that must
+    be prepared again on the next forward pass.
+    """
     reset = reset_model_runtime_tensor_state((runner.get_model(), get_drafter_model(runner)))
     logger.info(
         "[restore model] reset model-owned runtime tensor state for %d owners",
@@ -153,9 +176,11 @@ def _reset_model_module_runtime_state(runner) -> None:
 
 
 def _reset_block_table_runtime_state(runner) -> None:
-    # Clear both CPU source rows and device rows. Graph recapture can otherwise
-    # copy snapshot-time block ids back to the device before a real request
-    # repopulates the active rows.
+    """Clear KV block IDs in the input batch's Host and NPU block tables.
+
+    Graph recapture can otherwise copy snapshot-time CPU block IDs back to the
+    device before a real request repopulates the active rows.
+    """
     block_tables = runner.input_batch.block_table.block_tables
     for block_table in block_tables:
         buf = block_table.block_table
