@@ -60,8 +60,8 @@ def test_sfa_dcp_builder_rebuilds_replicated_view_indices_after_restore() -> Non
     builder = _make_builder()
     builder.arange_buffer.zero_()
 
-    with patch.object(AscendSFAMetadataBuilder, "reset_after_snapshot_restore") as reset_base:
-        builder.reset_after_snapshot_restore()
+    with patch.object(AscendSFAMetadataBuilder, "reset_runtime_state_after_snapshot_restore") as reset_base:
+        builder.reset_runtime_state_after_snapshot_restore()
 
     reset_base.assert_called_once_with()
     torch.testing.assert_close(builder.arange_buffer, torch.arange(8, dtype=torch.int32))

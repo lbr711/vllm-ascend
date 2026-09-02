@@ -649,14 +649,14 @@ class TestTokenDispatcherWithAllGather(TestBase):
         self.assertIsInstance(results.combine_metadata, MoEAllGatherCombineMetadata)
 
 
-def test_all2allv_reset_after_snapshot_restore_rebuilds_expert_ids():
+def test_all2allv_reset_runtime_state_after_snapshot_restore_rebuilds_expert_ids():
     dispatcher = object.__new__(TokenDispatcherWithAll2AllV)
     dispatcher.num_experts = 4
     dispatcher.num_local_experts = 2
     dispatcher.expert_ids_per_ep_rank = torch.full((4,), -1, dtype=torch.int32)
 
     with patch("torch.npu.current_device", return_value="cpu"):
-        dispatcher.reset_after_snapshot_restore()
+        dispatcher.reset_runtime_state_after_snapshot_restore()
 
     torch.testing.assert_close(
         dispatcher.expert_ids_per_ep_rank,

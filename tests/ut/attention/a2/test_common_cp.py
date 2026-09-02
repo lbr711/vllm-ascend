@@ -112,7 +112,7 @@ class TestCommonCP(unittest.TestCase):
             def __init__(self):
                 self.base_reset = False
 
-            def reset_after_snapshot_restore(self):
+            def reset_runtime_state_after_snapshot_restore(self):
                 self.base_reset = True
 
         class Impl(DCPImplMixin, BaseImpl):
@@ -123,7 +123,7 @@ class TestCommonCP(unittest.TestCase):
         mock_get_dcp_group.side_effect = [old_group, new_group]
         impl = Impl()
 
-        impl.reset_after_snapshot_restore()
+        impl.reset_runtime_state_after_snapshot_restore()
 
         self.assertIs(impl.dcp_group, new_group)
         self.assertEqual(impl.dcp_size, 4)

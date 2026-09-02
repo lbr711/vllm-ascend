@@ -57,11 +57,11 @@ class TestMoECommMethod(TestBase):
         self._patch_get_ascend_config.stop()
         self._patch_get_ascend_config_module.stop()
 
-    def test_fused_mc2_reset_after_snapshot_restore_releases_symm_buffer(self):
+    def test_fused_mc2_reset_runtime_state_after_snapshot_restore_releases_symm_buffer(self):
         comm_impl = object.__new__(FusedMC2CommImpl)
         comm_impl._mega_moe_symm_buffer = object()
 
-        comm_impl.reset_after_snapshot_restore()
+        comm_impl.reset_runtime_state_after_snapshot_restore()
 
         self.assertIsNone(comm_impl._mega_moe_symm_buffer)
 

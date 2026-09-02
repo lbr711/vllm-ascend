@@ -24,7 +24,7 @@ def reset_modules_runtime_state(models: Iterable[nn.Module | None]) -> int:
             if id(module) in reset_ids:
                 continue
             reset_ids.add(id(module))
-            reset = getattr(module, "reset_after_snapshot_restore", None)
+            reset = getattr(module, "reset_runtime_state_after_snapshot_restore", None)
             if callable(reset):
                 reset()
                 reset_count += 1
