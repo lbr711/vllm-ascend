@@ -14,47 +14,80 @@ from vllm_ascend.snapshot.model_runtime.h2d_copy import copy_checkpoint_tensor
 
 def dump_state_dict(model: nn.Module, path: str) -> None:
     if os.path.exists(path):
-        logger.info("model save path %s exists, skip dump model", path)
+        logger.info(
+            "[snapshot][checkpoint] dump skipped: path=%s reason=already_exists",
+            path,
+        )
         return
 
-    logger.info("[dump model] start dump model to %s (type=%s)", path, type(model))
+    logger.info(
+        "[snapshot][checkpoint] dump started: path=%s model_type=%s",
+        path,
+        type(model).__name__,
+    )
     start = time.time()
     import psutil  # type: ignore[import-untyped]
 
     process = psutil.Process(os.getpid())
-    logger.info("start dump_model() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
+    logger.info(
+        "[snapshot][checkpoint] memory usage: phase=before_dump rss=%.2f MiB",
+        process.memory_info().rss / 1024**2,
+    )
     torch.save(model.state_dict(), path)
     gc.collect()
-    logger.info("after gc.collect() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
+    logger.info(
+        "[snapshot][checkpoint] memory usage: phase=after_gc rss=%.2f MiB",
+        process.memory_info().rss / 1024**2,
+    )
     torch.npu.empty_cache()
-    logger.info("after torch.npu.empty_cache() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
+    logger.info(
+        "[snapshot][checkpoint] memory usage: "
+        "phase=after_npu_cache_clear rss=%.2f MiB",
+        process.memory_info().rss / 1024**2,
+    )
     try:
         libc = ctypes.CDLL("libc.so.6")
         result = libc.malloc_trim(0)
-        if result == 1:
-            print("exec malloc_trim(0) success")
-        else:
-            print("exec malloc_trim(0) fail")
+        logger.info(
+            "[snapshot][checkpoint] malloc trim completed: released=%s",
+            result == 1,
+        )
     except Exception as e:
-        print(f"exec malloc_trim(0) with error: {e}")
+        logger.warning(
+            "[snapshot][checkpoint] malloc trim failed: error=%s",
+            e,
+        )
 
-    logger.info("after dump_model() cpu memory use: %.2f MB", process.memory_info().rss / 1024**2)
-    logger.info("[dump model] save model ckpt to %s, elapse %.4f s", path, time.time() - start)
+    logger.info(
+        "[snapshot][checkpoint] memory usage: phase=after_dump rss=%.2f MiB",
+        process.memory_info().rss / 1024**2,
+    )
+    logger.info(
+        "[snapshot][checkpoint] dump completed: path=%s duration=%.4f s",
+        path,
+        time.time() - start,
+    )
 
 
 def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
     if not os.path.exists(path):
-        logger.warning("[restore model] [%s] ckpt %s not found, skip", label, path)
+        logger.warning(
+            "[snapshot][checkpoint] restore skipped: "
+            "model=%s path=%s reason=not_found",
+            label,
+            path,
+        )
         return
 
     start = time.time()
     state_dict = torch.load(path, map_location="cpu", mmap=True)
     logger.info(
-        "[restore model] [%s] load model to cpu from %s, elapse %ss, the num of items is %s",
+        "[snapshot][checkpoint] checkpoint loaded: "
+        "model=%s path=%s tensors=%d duration=%.4f s",
         label,
         path,
-        time.time() - start,
         len(state_dict),
+        time.time() - start,
     )
     restored = 0
     parameters = dict(model.named_parameters())
@@ -66,9 +99,15 @@ def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
         if name in buffers:
             copy_checkpoint_tensor(buffers[name].data, cpu_tensor)
             restored += 1
-    logger.info("[restore model] [%s] replace success %s / %s", label, restored, len(state_dict))
     logger.info(
-        "[restore model] [%s] restore model ckpt from %s, elapse %.4f s",
+        "[snapshot][checkpoint] tensors copied: model=%s restored=%d total=%d",
+        label,
+        restored,
+        len(state_dict),
+    )
+    logger.info(
+        "[snapshot][checkpoint] restore completed: "
+        "model=%s path=%s duration=%.4f s",
         label,
         path,
         time.time() - start,
