@@ -54,7 +54,7 @@ def dump_model_runner(runner, path: str = "/mnt") -> None:
         )
 
 
-def _restore_one_model(runner, model: nn.Module, model_save_path: str, label: str) -> None:
+def _restore_model_checkpoint(runner, model: nn.Module, model_save_path: str, label: str) -> None:
     restore_state_dict(model, model_save_path, label)
     restore_derived_tensor_state(model, runner.model_config.dtype, label)
 
@@ -69,7 +69,7 @@ def restore_model_runner(runner, path: str = "/mnt") -> None:
     )
     rank_in_group = get_tp_group().rank_in_group
     model = runner.get_model()
-    _restore_one_model(
+    _restore_model_checkpoint(
         runner,
         model,
         os.path.join(model_dir, f"model_ckpt.{runner.dp_rank}tp{rank_in_group}.pth"),
@@ -77,29 +77,32 @@ def restore_model_runner(runner, path: str = "/mnt") -> None:
     )
     drafter_model = get_drafter_model(runner)
     if drafter_model is not None:
-        _restore_one_model(
+        _restore_model_checkpoint(
             runner,
             drafter_model,
             os.path.join(model_dir, f"model_ckpt_drafter.{runner.dp_rank}tp{rank_in_group}.pth"),
             "drafter",
         )
 
-    # Restore persistent and derived model state before clearing transient
-    # request/capture state used by the first post-resume forward.
+    _restore_model_runner_runtime_state(runner, model)
+
+
+def _restore_model_runner_runtime_state(runner, model: nn.Module) -> None:
+    """Restore rebuildable state and clear pre-snapshot runtime carry-over."""
     restore_global_tensor_state(model, runner.model_config.hf_config, runner.device)
-    _clear_spec_decode_carryover(runner)
-    restore_drafter_runtime_buffers(runner)
-    _reset_attention_builder_runtime_states(runner)
-    _reset_runtime_tensor_states(runner)
-    _reset_block_table_device_buffers(runner)
+    _reset_spec_decode_runtime_state(runner)
+    _restore_drafter_runtime_state(runner)
+    _reset_attention_builder_runtime_state(runner)
+    _reset_runner_and_model_runtime_tensors(runner)
+    _reset_block_table_runtime_state(runner)
 
 
-def restore_drafter_runtime_buffers(runner) -> None:
+def _restore_drafter_runtime_state(runner) -> None:
     if isinstance(runner.drafter, AscendEagleProposer):
         runner.drafter.restore_runtime_buffers()
 
 
-def _clear_spec_decode_carryover(runner) -> None:
+def _reset_spec_decode_runtime_state(runner) -> None:
     if hasattr(runner, "_draft_token_req_ids"):
         runner._draft_token_req_ids = None
     if hasattr(runner, "_draft_token_ids"):
@@ -109,7 +112,7 @@ def _clear_spec_decode_carryover(runner) -> None:
         input_batch.prev_req_id_to_index = None
 
 
-def _reset_attention_builder_runtime_states(runner) -> None:
+def _reset_attention_builder_runtime_state(runner) -> None:
     builders = [
         builder
         for kv_groups in runner.attn_groups
@@ -125,7 +128,7 @@ def _reset_attention_builder_runtime_states(runner) -> None:
     )
 
 
-def _reset_runtime_tensor_states(runner) -> None:
+def _reset_runner_and_model_runtime_tensors(runner) -> None:
     """Reset runner staging buffers and model-owned reusable runtime tensors."""
     runner.positions.zero_()
     runner._positions_cpu_buf.zero_()
@@ -145,7 +148,7 @@ def _reset_runtime_tensor_states(runner) -> None:
     )
 
 
-def _reset_block_table_device_buffers(runner) -> None:
+def _reset_block_table_runtime_state(runner) -> None:
     # Clear both CPU source rows and device rows. Graph recapture can otherwise
     # copy snapshot-time block ids back to the device before a real request
     # repopulates the active rows.
