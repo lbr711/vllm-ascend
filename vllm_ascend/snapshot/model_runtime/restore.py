@@ -9,7 +9,7 @@ from vllm.logger import logger
 
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
-    reset_model_modules_after_restore,
+    reset_model_modules_after_snapshot_restore,
     restore_derived_tensor_state,
     restore_global_tensor_state,
 )
@@ -142,7 +142,7 @@ def _reset_attention_builders_after_restore(runner) -> None:
         if id(builder_or_mask) in seen_ids:
             continue
         seen_ids.add(id(builder_or_mask))
-        reset_state = getattr(builder_or_mask, "reset_transient_state_after_snapshot_restore", None)
+        reset_state = getattr(builder_or_mask, "reset_after_snapshot_restore", None)
         if callable(reset_state):
             reset_state()
             reset_count += 1
@@ -164,7 +164,7 @@ def _reset_runner_input_runtime_state(runner) -> None:
     runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
     runner.input_batch.num_prompt_tokens_cpu_tensor.zero_()
     if runner.use_dcp:
-        runner.dcp_manager.reset_transient_state_after_snapshot_restore()
+        runner.dcp_manager.reset_after_snapshot_restore()
 
     for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
         staged.gpu.fill_(0)
@@ -177,7 +177,7 @@ def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     Modules refresh their own state and forward the hook to backend
     implementations they own.
     """
-    reset_count = reset_model_modules_after_restore((runner.get_model(), get_drafter_model(runner)))
+    reset_count = reset_model_modules_after_snapshot_restore((runner.get_model(), get_drafter_model(runner)))
     logger.info(
         "[restore model] reset runtime state for %d model modules",
         reset_count,

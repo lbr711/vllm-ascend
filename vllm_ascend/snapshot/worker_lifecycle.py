@@ -154,7 +154,7 @@ def _rebuild_parallel_groups(worker) -> None:
             if comm_method_or_dispatcher is None or id(comm_method_or_dispatcher) in reset_ids:
                 continue
             reset_ids.add(id(comm_method_or_dispatcher))
-            reset_state = getattr(comm_method_or_dispatcher, "reset_transient_state_after_snapshot_restore", None)
+            reset_state = getattr(comm_method_or_dispatcher, "reset_after_snapshot_restore", None)
             if callable(reset_state):
                 reset_state()
         logger.info("[snapshot] [parallel] rank %s: refreshed cached MoE parallel and HCCL groups", worker.rank)

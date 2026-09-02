@@ -1815,7 +1815,7 @@ class AscendC8AttentionBackendImpl(AscendAttentionBackendImpl):
         layer._c8_scales_prepared = True
         self._snapshot_reprepare_c8_scales = False
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         self._snapshot_reprepare_c8_scales = True
 
     def _dequant_paged_kv_to_dense(

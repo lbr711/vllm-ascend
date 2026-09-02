@@ -127,7 +127,7 @@ class DCPManager:
         self.async_rebuild_num_tokens = 0
         self.long_seq_metadata: Any | None = None
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         self.num_reqs = 0
         self.num_decode_reqs = 0
         self.num_prefill_reqs = 0

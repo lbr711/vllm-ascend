@@ -425,7 +425,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.sfa_qsfa_k_nope_clip_alpha = None
         impl.sfa_qsfa_kr_cache_dummy = None
 
-        impl.reset_transient_state_after_snapshot_restore()
+        impl.reset_after_snapshot_restore()
 
         torch.testing.assert_close(impl.sfa_qsfa_k_nope_clip_alpha, torch.ones(1))
         self.assertEqual(impl.sfa_qsfa_kr_cache_dummy.numel(), 0)
@@ -444,7 +444,7 @@ class TestAscendSFASnapshotRestore(TestBase):
             torch.full((4,), 23, dtype=torch.int32),
         ]
 
-        builder.reset_transient_state_after_snapshot_restore()
+        builder.reset_after_snapshot_restore()
 
         buffers = [
             builder.actual_seq_lengths_query,

@@ -51,13 +51,13 @@ class TestAttentionMaskBuilder(TestBase):
         attn_mask = attention_mask_builder.get_splitfuse_attn_mask()
         self.assertEqual(attn_mask.shape, (2048, 2048))
 
-    def test_reset_transient_state_after_snapshot_restore_clears_caches(self):
+    def test_reset_after_snapshot_restore_clears_caches(self):
         attention_mask_builder = AttentionMaskBuilder(torch.device("cpu"))
         attention_mask_builder.get_attn_mask(max_seq_len=8, dtype=torch.float16)
         attention_mask_builder.get_splitfuse_attn_mask()
         attention_mask_builder.get_mla_mask(torch.float16)
 
-        attention_mask_builder.reset_transient_state_after_snapshot_restore()
+        attention_mask_builder.reset_after_snapshot_restore()
 
         self.assertIsNone(attention_mask_builder.attn_mask_cache)
         self.assertEqual(attention_mask_builder._seq_len_cached, 0)

@@ -39,7 +39,7 @@ class AttentionMaskBuilder:
         self.mla_mask = None
         self.chunked_prefill_attn_mask = None
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         self.attn_mask_cache = None
         self._seq_len_cached = 0
         self.mla_mask = None
