@@ -32,7 +32,7 @@ def test_metadata_builder_reset_restores_cold_start_state():
         "cp_sas_c4": torch.ones(1),
     }
 
-    builder.reset_transient_state_after_snapshot_restore()
+    builder.reset_after_snapshot_restore()
 
     assert builder.num_decodes == 0
     assert builder.num_prefills == 0

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persistent, derived, and transient tensor lifecycle helpers."""
+"""Model tensor persistence and snapshot-restore lifecycle helpers."""
 
 from collections.abc import Iterable
 
@@ -33,7 +33,7 @@ def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) ->
     return module._buffers[name]
 
 
-def reset_model_modules_after_restore(models: Iterable[nn.Module | None]) -> int:
+def reset_model_modules_after_snapshot_restore(models: Iterable[nn.Module | None]) -> int:
     """Reset target and drafter modules after snapshot restore.
 
     A module that owns a backend implementation is responsible for forwarding
@@ -48,7 +48,7 @@ def reset_model_modules_after_restore(models: Iterable[nn.Module | None]) -> int
             if id(module) in reset_ids:
                 continue
             reset_ids.add(id(module))
-            reset_state = getattr(module, "reset_transient_state_after_snapshot_restore", None)
+            reset_state = getattr(module, "reset_after_snapshot_restore", None)
             if callable(reset_state):
                 reset_state()
                 reset_count += 1

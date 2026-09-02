@@ -240,7 +240,7 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         # [block_nums, block_size, head_num, head_dim]
         self.slot_mapping = torch.zeros(self.slot_mapping_shape, dtype=torch.int32, device=self.device)
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         """Clear reusable DSA-CP request metadata after restore."""
         self.num_decodes = 0
         self.num_prefills = 0
@@ -1239,7 +1239,7 @@ class AscendDSACPImpl(DSAAttentionImpl):
         self.tp_size = tp_group.world_size
         self.tp_rank = tp_group.rank_in_group
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         self._refresh_tp_group_runtime(force=True)
 
     def process_weights_after_loading(self, act_dtype: torch.dtype):

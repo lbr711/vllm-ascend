@@ -40,8 +40,8 @@ def test_sfa_dcp_rebuilds_sparse_index_remap_after_restore() -> None:
     impl._remap_order.zero_()
     impl._remap_invalid_index.zero_()
 
-    with patch.object(DCPImplMixin, "reset_transient_state_after_snapshot_restore") as reset_base:
-        impl.reset_transient_state_after_snapshot_restore()
+    with patch.object(DCPImplMixin, "reset_after_snapshot_restore") as reset_base:
+        impl.reset_after_snapshot_restore()
 
     reset_base.assert_called_once_with()
     torch.testing.assert_close(impl._remap_order, torch.arange(8, dtype=torch.float32))

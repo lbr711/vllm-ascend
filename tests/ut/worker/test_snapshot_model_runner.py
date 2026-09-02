@@ -21,7 +21,7 @@ class _TopKHolder(torch.nn.Module):
         super().__init__()
         self.topk_indices_buffer = buffer
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         self.topk_indices_buffer.fill_(-1)
 
 
@@ -33,7 +33,7 @@ class _BackendSpecificReloadTarget:
     def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
         self.reloaded = True
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
+    def reset_after_snapshot_restore(self) -> None:
         self.runtime_reset = True
 
 
@@ -45,8 +45,8 @@ class _ImplHolder(torch.nn.Module):
     def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
         self.impl.rebuild_derived_tensors_after_snapshot_restore(act_dtype)
 
-    def reset_transient_state_after_snapshot_restore(self) -> None:
-        self.impl.reset_transient_state_after_snapshot_restore()
+    def reset_after_snapshot_restore(self) -> None:
+        self.impl.reset_after_snapshot_restore()
 
 
 class _FailingReloadTarget:
@@ -59,10 +59,10 @@ def test_dsa_snapshot_hooks_are_forwarded_to_impl():
     layer = SimpleNamespace(impl=impl)
 
     DSAAttention.rebuild_derived_tensors_after_snapshot_restore(layer, torch.bfloat16)
-    DSAAttention.reset_transient_state_after_snapshot_restore(layer)
+    DSAAttention.reset_after_snapshot_restore(layer)
 
     impl.rebuild_derived_tensors_after_snapshot_restore.assert_called_once_with(torch.bfloat16)
-    impl.reset_transient_state_after_snapshot_restore.assert_called_once_with()
+    impl.reset_after_snapshot_restore.assert_called_once_with()
 
 
 def _make_runner(model, drafter_model):
@@ -178,7 +178,7 @@ def test_reset_runner_input_runtime_state():
     assert torch.count_nonzero(runner._positions_cpu_buf) == 0
     assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
     assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
-    runner.dcp_manager.reset_transient_state_after_snapshot_restore.assert_called_once_with()
+    runner.dcp_manager.reset_after_snapshot_restore.assert_called_once_with()
 
 
 def test_reset_target_and_drafter_modules_after_restore():
