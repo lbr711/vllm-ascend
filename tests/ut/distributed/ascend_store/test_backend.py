@@ -719,12 +719,14 @@ class TestMemcacheBackendMethods(unittest.TestCase):
     def test_reset_after_snapshot_restores_initialized_lazy_store(self):
         b = self._make_backend()
         b._lazy_init = True
+        old_store = b.store
         b.prepare_for_snapshot_restore()
         new_store = MagicMock()
         b._setup_store = MagicMock(return_value=new_store)
 
         b.reset_after_snapshot("10.0.0.2")
 
+        old_store.close.assert_called_once_with()
         self.assertIs(b.store, new_store)
         self.assertTrue(b._store_initialized)
 

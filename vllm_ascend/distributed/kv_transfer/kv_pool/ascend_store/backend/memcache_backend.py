@@ -135,13 +135,11 @@ class MemcacheBackend(Backend):
     def prepare_for_snapshot_restore(self) -> None:
         if self._store_was_initialized is None:
             self._store_was_initialized = self._store_initialized
+        if self.store is not None:
+            self.store.close()
         self.store = None
         self._store_initialized = False
         self._pending_buffers = self._registered_buffers
-
-        import gc
-
-        gc.collect()
 
     def reset_after_snapshot(self, _local_ip: str) -> None:
         self.prepare_for_snapshot_restore()
