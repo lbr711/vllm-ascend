@@ -726,7 +726,7 @@ class TestMemcacheBackendMethods(unittest.TestCase):
 
         b.reset_after_snapshot("10.0.0.2")
 
-        old_store.close.assert_called_once_with()
+        old_store.close.assert_not_called()
         self.assertIs(b.store, new_store)
         self.assertTrue(b._store_initialized)
 
