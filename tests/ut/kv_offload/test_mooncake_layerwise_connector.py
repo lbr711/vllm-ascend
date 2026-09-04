@@ -1176,6 +1176,19 @@ class TestMooncakeLayerwiseConnector(unittest.TestCase):
         self.assertIsNotNone(connector.connector_scheduler)
         self.assertIsNone(connector.connector_worker)
 
+    def test_rebuild_refreshes_scheduler_identity(self):
+        kv_config = SimpleNamespace(engine_id="engine-old")
+        scheduler = MooncakeLayerwiseConnectorScheduler.__new__(MooncakeLayerwiseConnectorScheduler)
+        scheduler.engine_id = "engine-old"
+        scheduler.side_channel_host = "10.0.0.1"
+        scheduler.vllm_config = SimpleNamespace(kv_transfer_config=kv_config)
+
+        scheduler.rebuild_kv_transfer_endpoint("10.0.0.2", "engine-new")
+
+        self.assertEqual(scheduler.engine_id, "engine-new")
+        self.assertEqual(scheduler.side_channel_host, "10.0.0.2")
+        self.assertEqual(kv_config.engine_id, "engine-new")
+
     @patch.object(MooncakeLayerwiseConnectorScheduler, "get_num_new_matched_tokens")
     def test_get_num_new_matched_tokens(self, mock_method):
         connector = MooncakeLayerwiseConnector(self.config, KVConnectorRole.SCHEDULER, self.kv_cache_config)

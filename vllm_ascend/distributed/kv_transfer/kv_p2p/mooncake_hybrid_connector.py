@@ -1190,6 +1190,12 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
     def rebuild_kv_transfer_endpoint(
         self, local_ip: str, new_engine_id: str | None = None
     ) -> None:
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.rebuild_kv_transfer_endpoint(
+                local_ip, new_engine_id
+            )
         if self.connector_worker is not None:
             self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
@@ -1280,6 +1286,16 @@ class MooncakeConnectorScheduler:
         self.num_swa_blocks = [
             cdiv(n_tokens, block_size) + 1 if n_tokens else 0 for n_tokens, block_size in sw_sizes_tokens
         ]
+
+    def rebuild_kv_transfer_endpoint(
+        self, local_ip: str, new_engine_id: str | None = None
+    ) -> None:
+        self.side_channel_host = local_ip
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+            kv_config = self.vllm_config.kv_transfer_config
+            assert kv_config is not None
+            kv_config.engine_id = new_engine_id
 
     def get_sw_clipped_blocks(self, block_ids: BlockIds) -> BlockIds:
         """

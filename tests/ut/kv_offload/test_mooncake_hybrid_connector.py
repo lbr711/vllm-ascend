@@ -5,6 +5,7 @@ import types
 import unittest
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +23,20 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_hybrid_connector import
     MooncakeConnectorScheduler,
     MooncakeConnectorWorker,
 )
+
+
+def test_rebuild_refreshes_scheduler_identity():
+    kv_config = SimpleNamespace(engine_id="engine-old")
+    scheduler = MooncakeConnectorScheduler.__new__(MooncakeConnectorScheduler)
+    scheduler.engine_id = "engine-old"
+    scheduler.side_channel_host = "10.0.0.1"
+    scheduler.vllm_config = SimpleNamespace(kv_transfer_config=kv_config)
+
+    scheduler.rebuild_kv_transfer_endpoint("10.0.0.2", "engine-new")
+
+    assert scheduler.engine_id == "engine-new"
+    assert scheduler.side_channel_host == "10.0.0.2"
+    assert kv_config.engine_id == "engine-new"
 
 
 class MockRequest:

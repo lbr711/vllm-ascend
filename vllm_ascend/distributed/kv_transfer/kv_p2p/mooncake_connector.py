@@ -1686,6 +1686,12 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
     def rebuild_kv_transfer_endpoint(
         self, local_ip: str, new_engine_id: str | None = None
     ) -> None:
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.rebuild_kv_transfer_endpoint(
+                local_ip, new_engine_id
+            )
         if self.connector_worker is not None:
             self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
@@ -1735,6 +1741,16 @@ class MooncakeConnectorScheduler:
         self.use_compress = self._model_uses_compress()
         self.group_transfer_info = [self._get_group_transfer_info(group) for group in kv_cache_config.kv_cache_groups]
         self.need_truncate = self.use_compress or any(info.is_state_group for info in self.group_transfer_info)
+
+    def rebuild_kv_transfer_endpoint(
+        self, local_ip: str, new_engine_id: str | None = None
+    ) -> None:
+        self.side_channel_host = local_ip
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+            kv_config = self.vllm_config.kv_transfer_config
+            assert kv_config is not None
+            kv_config.engine_id = new_engine_id
 
     def _model_uses_compress(self) -> bool:
         hf_config = getattr(self.vllm_config.model_config, "hf_config", None)

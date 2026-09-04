@@ -1928,6 +1928,19 @@ class TestMooncakeConnector(unittest.TestCase):
         self.assertIsNotNone(connector.connector_scheduler)
         self.assertIsNone(connector.connector_worker)
 
+    def test_rebuild_refreshes_scheduler_identity(self):
+        kv_config = MagicMock(engine_id="engine-old")
+        scheduler = MooncakeConnectorScheduler.__new__(MooncakeConnectorScheduler)
+        scheduler.engine_id = "engine-old"
+        scheduler.side_channel_host = "10.0.0.1"
+        scheduler.vllm_config = MagicMock(kv_transfer_config=kv_config)
+
+        scheduler.rebuild_kv_transfer_endpoint("10.0.0.2", "engine-new")
+
+        self.assertEqual(scheduler.engine_id, "engine-new")
+        self.assertEqual(scheduler.side_channel_host, "10.0.0.2")
+        self.assertEqual(kv_config.engine_id, "engine-new")
+
     @patch.object(MooncakeConnectorScheduler, "get_num_new_matched_tokens")
     def test_get_num_new_matched_tokens(self, mock_method):
         with (

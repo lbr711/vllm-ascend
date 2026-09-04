@@ -862,6 +862,12 @@ class MooncakeLayerwiseConnector(KVConnectorBase_V1, SupportsHMA):
     def rebuild_kv_transfer_endpoint(
         self, local_ip: str, new_engine_id: str | None = None
     ) -> None:
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.rebuild_kv_transfer_endpoint(
+                local_ip, new_engine_id
+            )
         if self.connector_worker is not None:
             self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
@@ -911,6 +917,16 @@ class MooncakeLayerwiseConnectorScheduler:
             )
         else:
             self.metaserver_client = httpx.Client(limits=httpx.Limits(max_connections=100000), timeout=None)
+
+    def rebuild_kv_transfer_endpoint(
+        self, local_ip: str, new_engine_id: str | None = None
+    ) -> None:
+        self.side_channel_host = local_ip
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+            kv_config = self.vllm_config.kv_transfer_config
+            assert kv_config is not None
+            kv_config.engine_id = new_engine_id
 
     @staticmethod
     def _iter_kv_cache_specs(kv_cache_config: KVCacheConfig):
