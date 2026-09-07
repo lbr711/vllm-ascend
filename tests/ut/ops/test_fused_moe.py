@@ -26,6 +26,13 @@ def _build_weight_layer():
     )
 
 
+def _build_weight_module():
+    layer = nn.Module()
+    layer.w13_weight = nn.Parameter(torch.randn(2, 3, 4))
+    layer.w2_weight = nn.Parameter(torch.randn(2, 4, 3))
+    return layer
+
+
 def _build_apply_layer():
     return SimpleNamespace(
         w13_weight=nn.Parameter(torch.randn(4, 3, 8)),
@@ -165,6 +172,36 @@ def test_process_weights_after_loading_uses_version_specific_layout(
     assert layer.w2_weight is w2_parameter
     assert layer.w13_weight.weight_loader is w13_parameter.weight_loader
     assert layer.w2_weight.weight_loader is w2_parameter.weight_loader
+
+
+@pytest.mark.parametrize("snapshot_config", [object(), None])
+def test_unquantized_split_weights_are_persistent_with_snapshot(monkeypatch, snapshot_config):
+    method = _build_unquantized_method()
+    layer = _build_weight_module()
+    vllm_config = SimpleNamespace(snapshot_config=snapshot_config)
+
+    monkeypatch.setattr(fused_moe_module, "get_ascend_config", lambda: SimpleNamespace(enable_fused_mc2=1))
+    monkeypatch.setattr(fused_moe_module, "get_current_vllm_config", lambda: vllm_config)
+    monkeypatch.setattr(fused_moe_module, "use_cann_megamoe", lambda _: True)
+    monkeypatch.setattr(torch.npu, "empty_cache", lambda: None)
+    upstream_method_base = AscendUnquantizedFusedMoEMethod.__mro__[2]
+    monkeypatch.setattr(
+        upstream_method_base,
+        "process_weights_after_loading",
+        lambda self, layer: None,
+        raising=False,
+    )
+
+    method.process_weights_after_loading(layer)
+
+    assert not hasattr(layer, "w13_weight")
+    assert not hasattr(layer, "w2_weight")
+    expected_buffers = {
+        *(f"_snapshot_w13_weight_list_{index}" for index in range(2)),
+        *(f"_snapshot_w2_weight_list_{index}" for index in range(2)),
+    }
+    expected_state = expected_buffers if snapshot_config is not None else set()
+    assert set(layer.state_dict()) == expected_state
 
 
 def test_ascend_runner_promotes_runtime_state_to_buffer():

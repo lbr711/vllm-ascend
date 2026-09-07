@@ -47,6 +47,7 @@ from vllm_ascend.ops.fused_moe.moe_comm_method import AllGatherCommImpl, FusedEx
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.quantization.methods.base import get_moe_num_logical_experts
 from vllm_ascend.quantization.quant_type import QuantType
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_lists
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_NZ,
     maybe_trans_nz,
@@ -146,7 +147,8 @@ class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
         # in their native format without explicit casting here.
         enable_fused_mc2 = get_ascend_config().enable_fused_mc2
         if enable_fused_mc2:
-            use_megamoe = use_cann_megamoe(get_current_vllm_config())
+            vllm_config = get_current_vllm_config()
+            use_megamoe = use_cann_megamoe(vllm_config)
             if not use_megamoe:
                 layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight.data, ACL_FORMAT_FRACTAL_NZ)
                 layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight.data, ACL_FORMAT_FRACTAL_NZ)
@@ -155,6 +157,8 @@ class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
                 layer.w2_weight_list = [weight.clone() for weight in layer.w2_weight.data.unbind(dim=0)]
                 del layer.w13_weight
                 del layer.w2_weight
+                if vllm_config.snapshot_config is not None:
+                    persist_tensor_lists(layer, ("w13_weight_list", "w2_weight_list"))
                 torch.npu.empty_cache()
         else:
             layer.w13_weight.data = maybe_trans_nz(layer.w13_weight.data)
