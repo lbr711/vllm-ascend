@@ -99,6 +99,7 @@ def test_snapshot_suspend_runs_npu_snapshot_sequence(worker):
 def test_snapshot_resume_runs_npu_restore_phases(worker):
     with (
         patch("vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api") as call_aclrt,
+        patch("vllm_ascend.snapshot.worker_lifecycle._reset_slot_mapping_kernel_cache") as reset_kernel_cache,
         patch("vllm_ascend.snapshot.worker_lifecycle._update_worker_info") as update_worker,
         patch("vllm_ascend.snapshot.worker_lifecycle._rebuild_parallel_groups") as rebuild_parallel,
         patch("vllm_ascend.snapshot.worker_lifecycle.restore_model_runner") as restore_model,
@@ -113,11 +114,22 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
         "aclrtSnapShotProcessRestore",
         "aclrtSnapShotProcessUnlock",
     ]
+    reset_kernel_cache.assert_called_once_with()
     update_worker.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3")
     rebuild_parallel.assert_called_once_with(worker)
     restore_model.assert_called_once_with(worker.model_runner, "/tmp/model")
     recapture_graph.assert_called_once_with(worker)
     rebuild_kv.assert_called_once_with(worker, "10.0.0.2", "engine-id")
+
+
+def test_reset_slot_mapping_kernel_cache():
+    from vllm_ascend.ops.triton.compute_slot_mapping import _compute_slot_mapping_kernel
+    from vllm_ascend.snapshot.worker_lifecycle import _reset_slot_mapping_kernel_cache
+
+    with patch.object(_compute_slot_mapping_kernel, "device_caches", create=True) as device_caches:
+        _reset_slot_mapping_kernel_cache()
+
+    device_caches.clear.assert_called_once_with()
 
 
 def test_call_aclrt_snapshot_api_invokes_aclrt_library(worker):

@@ -95,6 +95,7 @@ def resume_worker(
     steps = (
         ("restore_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessRestore")),
         ("unlock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessUnlock")),
+        ("reset_slot_mapping_kernel_cache", _reset_slot_mapping_kernel_cache),
         (
             "update_worker_network",
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
@@ -108,6 +109,13 @@ def resume_worker(
         ),
     )
     _run_timed_steps(worker, steps)
+
+
+def _reset_slot_mapping_kernel_cache() -> None:
+    """Discard restored Triton launchers for the Ascend slot-mapping kernel."""
+    from vllm_ascend.ops.triton.compute_slot_mapping import _compute_slot_mapping_kernel
+
+    _compute_slot_mapping_kernel.device_caches.clear()
 
 
 def _parallel_group_cleanup(worker) -> None:
