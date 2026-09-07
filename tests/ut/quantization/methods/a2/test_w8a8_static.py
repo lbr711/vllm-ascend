@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
@@ -124,7 +125,11 @@ class TestAscendW8A8LinearMethod(TestBase):
         layer = _create_process_weights_layer()
 
         mock_npu_format_cast.side_effect = identity
-        self.method.process_weights_after_loading(layer)
+        with patch(
+            "vllm_ascend.quantization.methods.w8a8_static.get_current_vllm_config",
+            return_value=SimpleNamespace(snapshot_config=None),
+        ):
+            self.method.process_weights_after_loading(layer)
 
         expected_offset = layer.input_offset.data.repeat(256).to(torch.float32)
         self.assertTrue(torch.equal(layer.aclnn_input_offset.data, expected_offset))
@@ -145,7 +150,11 @@ class TestAscendW8A8LinearMethod(TestBase):
         layer = _create_process_weights_layer(ascend_quant_method=COMPRESSED_TENSORS_METHOD)
 
         mock_npu_format_cast.side_effect = identity
-        self.method.process_weights_after_loading(layer)
+        with patch(
+            "vllm_ascend.quantization.methods.w8a8_static.get_current_vllm_config",
+            return_value=SimpleNamespace(snapshot_config=None),
+        ):
+            self.method.process_weights_after_loading(layer)
 
         expected_offset = layer.input_offset.data.repeat(256).to(torch.float32)
         self.assertTrue(torch.equal(layer.aclnn_input_offset.data, expected_offset))
@@ -159,6 +168,24 @@ class TestAscendW8A8LinearMethod(TestBase):
         self.assertIsInstance(layer.deq_scale, nn.Parameter)
         expected_deq_scale = layer.input_scale.data * layer.weight_scale.data
         self.assertTrue(torch.equal(layer.deq_scale.data, expected_deq_scale))
+
+    @patch("vllm_ascend.utils.get_ascend_config")
+    @patch("vllm_ascend.quantization.methods.w8a8_static.get_current_vllm_config")
+    @patch("torch_npu.npu_format_cast")
+    def test_snapshot_persists_derived_input_tensors(self, mock_npu_format_cast, mock_vllm_config, mock_get_config):
+        mock_config = MagicMock()
+        mock_config.weight_nz_mode = 1
+        mock_get_config.return_value = mock_config
+        mock_vllm_config.return_value = SimpleNamespace(snapshot_config=object())
+        mock_npu_format_cast.side_effect = identity
+        layer = _create_process_weights_layer()
+
+        self.method.process_weights_after_loading(layer)
+
+        self.assertIn("aclnn_input_scale_reciprocal", layer._buffers)
+        self.assertIn("aclnn_input_offset", layer._buffers)
+        self.assertNotIn("aclnn_input_scale_reciprocal", layer._parameters)
+        self.assertNotIn("aclnn_input_offset", layer._parameters)
 
 
 class TestAscendW8A8LinearMethodWithNpu(TestBase):

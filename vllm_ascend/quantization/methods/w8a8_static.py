@@ -19,7 +19,9 @@ from typing import Any
 
 import torch
 import torch_npu
+from vllm.config import get_current_vllm_config
 
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes
 from vllm_ascend.utils import (
     COMPRESSED_TENSORS_METHOD,
     maybe_trans_nz,
@@ -106,23 +108,21 @@ class AscendW8A8LinearMethod(AscendLinearScheme):
 
     def process_weights_after_loading(self, layer):
         expanding_factor = layer.weight.data.shape[1]
-        input_scale_repeated = layer.input_scale.data.repeat(expanding_factor)
-        layer.register_parameter(
-            "aclnn_input_scale",
-            torch.nn.Parameter(input_scale_repeated, requires_grad=False),
+        layer.aclnn_input_scale = torch.nn.Parameter(
+            layer.input_scale.data.repeat(expanding_factor), requires_grad=False
         )
+        layer.aclnn_input_scale_reciprocal = 1 / torch.nn.Parameter(
+            layer.input_scale.data.repeat(expanding_factor), requires_grad=False
+        )
+        layer.aclnn_input_offset = torch.nn.Parameter(
+            layer.input_offset.data.repeat(expanding_factor), requires_grad=False
+        ).to(layer.aclnn_input_scale.dtype)
 
-        input_scale_reciprocal = 1 / input_scale_repeated
-        layer.register_parameter(
-            "aclnn_input_scale_reciprocal",
-            torch.nn.Parameter(input_scale_reciprocal, requires_grad=False),
-        )
-
-        input_offset_repeated = layer.input_offset.data.repeat(expanding_factor)
-        layer.register_parameter(
-            "aclnn_input_offset",
-            torch.nn.Parameter(input_offset_repeated.to(input_scale_reciprocal.dtype), requires_grad=False),
-        )
+        if get_current_vllm_config().snapshot_config is not None:
+            persist_tensor_attributes(
+                layer,
+                ("aclnn_input_scale_reciprocal", "aclnn_input_offset"),
+            )
 
         layer.weight.data = layer.weight.data.transpose(0, 1).contiguous()
         layer.weight.data = maybe_trans_nz(layer.weight.data)
@@ -131,7 +131,4 @@ class AscendW8A8LinearMethod(AscendLinearScheme):
         ascend_quant_method = getattr(layer, "ascend_quant_method", "")
         if ascend_quant_method == COMPRESSED_TENSORS_METHOD:
             deq_scale = layer.input_scale.data * layer.weight_scale.data
-            layer.register_parameter(
-                "deq_scale",
-                torch.nn.Parameter(deq_scale, requires_grad=False),
-            )
+            layer.deq_scale = torch.nn.Parameter(deq_scale, requires_grad=False)
