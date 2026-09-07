@@ -126,10 +126,10 @@ def test_reset_slot_mapping_kernel_cache():
     from vllm_ascend.ops.triton.compute_slot_mapping import _compute_slot_mapping_kernel
     from vllm_ascend.snapshot.worker_lifecycle import _reset_slot_mapping_kernel_cache
 
-    with patch.object(_compute_slot_mapping_kernel, "device_caches", create=True) as device_caches:
+    with patch.object(_compute_slot_mapping_kernel, "cache", create=True) as cache:
         _reset_slot_mapping_kernel_cache()
 
-    device_caches.clear.assert_called_once_with()
+    cache.clear.assert_called_once_with()
 
 
 def test_call_aclrt_snapshot_api_invokes_aclrt_library(worker):

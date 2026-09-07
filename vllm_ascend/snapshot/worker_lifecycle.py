@@ -115,7 +115,7 @@ def _reset_slot_mapping_kernel_cache() -> None:
     """Discard restored Triton launchers for the Ascend slot-mapping kernel."""
     from vllm_ascend.ops.triton.compute_slot_mapping import _compute_slot_mapping_kernel
 
-    _compute_slot_mapping_kernel.device_caches.clear()
+    _compute_slot_mapping_kernel.cache.clear()
 
 
 def _parallel_group_cleanup(worker) -> None:
