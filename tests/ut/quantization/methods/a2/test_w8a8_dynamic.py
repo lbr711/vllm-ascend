@@ -68,12 +68,47 @@ class TestAscendW8A8DynamicLinearMethod(TestBase):
             "weight_offset",
             nn.Parameter(torch.randn(256, 1, dtype=torch.bfloat16), requires_grad=False),
         )
-        with patch("vllm_ascend.quantization.methods.w8a8_dynamic.maybe_trans_nz", side_effect=lambda x: x):
+        with (
+            patch("vllm_ascend.quantization.methods.w8a8_dynamic.maybe_trans_nz", side_effect=lambda x: x),
+            patch(
+                "vllm_ascend.quantization.methods.w8a8_dynamic.get_current_vllm_config",
+                return_value=SimpleNamespace(snapshot_config=None),
+            ),
+        ):
             self.method.process_weights_after_loading(layer)
         self.assertEqual(layer.weight_scale_fp32.dtype, torch.float32)
+        self.assertNotIn("weight_scale_fp32", layer._parameters)
+        self.assertNotIn("weight_scale_fp32", layer._buffers)
         self.assertEqual(layer.weight_scale.data.shape, (256,))
         self.assertEqual(layer.weight_offset.data.shape, (256,))
         self.assertEqual(layer.weight.data.shape, (256, 128))
+
+    def test_snapshot_persists_fp32_weight_scale(self):
+        layer = nn.Module()
+        layer.register_parameter(
+            "weight",
+            nn.Parameter(torch.ones((2, 4), dtype=torch.int8), requires_grad=False),
+        )
+        layer.register_parameter(
+            "weight_scale",
+            nn.Parameter(torch.ones((2, 1), dtype=torch.bfloat16), requires_grad=False),
+        )
+        layer.register_parameter(
+            "weight_offset",
+            nn.Parameter(torch.zeros((2, 1), dtype=torch.bfloat16), requires_grad=False),
+        )
+
+        with (
+            patch("vllm_ascend.quantization.methods.w8a8_dynamic.maybe_trans_nz", side_effect=lambda x: x),
+            patch(
+                "vllm_ascend.quantization.methods.w8a8_dynamic.get_current_vllm_config",
+                return_value=SimpleNamespace(snapshot_config=object()),
+            ),
+        ):
+            self.method.process_weights_after_loading(layer)
+
+        self.assertIn("weight_scale_fp32", layer._buffers)
+        self.assertNotIn("weight_scale_fp32", layer._parameters)
 
     def test_snapshot_persists_dsa_cp_split_weights(self):
         layer = nn.Module()
@@ -230,10 +265,12 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
 
     @patch("torch_npu.npu_format_cast")
     @patch("vllm_ascend.quantization.methods.w8a8_dynamic.get_ascend_config")
-    def test_process_weights_after_loading(self, mock_get_config, mock_format_cast):
+    @patch("vllm_ascend.quantization.methods.w8a8_dynamic.get_current_vllm_config")
+    def test_process_weights_after_loading(self, mock_vllm_config, mock_get_config, mock_format_cast):
         mock_config = MagicMock()
         mock_config.enable_fused_mc2 = 1
         mock_get_config.return_value = mock_config
+        mock_vllm_config.return_value = SimpleNamespace(snapshot_config=object())
         self.quant_method.dynamic_eplb = True
         mock_format_cast.return_value = torch.randint(
             -8, 8, (self.num_experts, self.hidden_size, 2 * self.intermediate_size), dtype=torch.int8
@@ -244,3 +281,13 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
         self.quant_method.process_weights_after_loading(layer)
         self.assertTrue(hasattr(layer, "w13_weight_list"))
         self.assertFalse(hasattr(layer, "w13_weight_scale_fp32"))
+        for name in (
+            "w13_weight_list",
+            "w2_weight_list",
+            "w13_weight_scale_fp32_list",
+            "w2_weight_scale_list",
+            "fused_w1_scale_list",
+            "fused_w2_scale_list",
+        ):
+            for index, tensor in enumerate(getattr(layer, name)):
+                self.assertIs(layer._buffers[f"_snapshot_{name}_{index}"], tensor)
