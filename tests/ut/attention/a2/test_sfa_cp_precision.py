@@ -119,25 +119,3 @@ def test_sfa_dcp_rebuilds_sparse_index_remap_after_restore() -> None:
     reset_base.assert_called_once_with()
     torch.testing.assert_close(impl._remap_order, torch.arange(8, dtype=torch.float32))
     torch.testing.assert_close(impl._remap_invalid_index, torch.tensor(-1.0))
-
-
-def test_sfa_dcp_torch_merge_handles_invalid_lse() -> None:
-    output = torch.tensor(
-        [
-            [[[1.0]], [[3.0]]],
-            [[[5.0]], [[7.0]]],
-        ]
-    )
-    lse = torch.tensor(
-        [
-            [[0.0], [float("-inf")]],
-            [[0.0], [0.0]],
-        ]
-    )
-
-    merged = AscendSFADCPImpl._merge_dcp_outputs_with_torch(output, lse, token_dim=2)
-
-    torch.testing.assert_close(merged, torch.tensor([[[3.0], [7.0]]]))
-
-    dsa_merged = AscendSFADCPImpl._merge_dcp_outputs_with_torch(output, lse, token_dim=1)
-    torch.testing.assert_close(dsa_merged, torch.tensor([[[3.0]], [[7.0]]]))

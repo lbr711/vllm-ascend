@@ -89,8 +89,14 @@ class TestAscendUnquantizedLinearMethod(TestBase):
         mock_format_cast.assert_called_once()
 
     @patch("vllm_ascend.utils.get_ascend_config")
+    @patch(
+        "vllm_ascend.ops.linear.get_current_vllm_config",
+        return_value=MagicMock(snapshot_config=None),
+    )
     @mock.patch("torch_npu.npu_format_cast")
-    def test_process_weights_after_loading_skips_nz_for_marked_layer(self, mock_format_cast, mock_get_config):
+    def test_process_weights_after_loading_skips_nz_for_marked_layer(
+        self, mock_format_cast, mock_vllm_config, mock_get_config
+    ):
         mock_config = MagicMock()
         mock_config.weight_nz_mode = 2
         mock_get_config.return_value = mock_config
