@@ -7,6 +7,10 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
 
+from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.ascend_store_connector import (
+    AscendStoreConnector,
+)
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -93,6 +97,20 @@ class AscendMultiConnector(MultiConnector, SupportsHMA):
             hook = getattr(connector, "on_kv_cache_written", None)
             if callable(hook):
                 hook(layer_name)
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        """Rebuild snapshot-sensitive endpoints owned by sub-connectors."""
+        for connector in self._connectors:
+            prepare = getattr(connector, "prepare_for_snapshot_restore", None)
+            if callable(prepare):
+                prepare()
+
+        pool_connectors = [connector for connector in self._connectors if isinstance(connector, AscendStoreConnector)]
+        other_connectors = [
+            connector for connector in self._connectors if not isinstance(connector, AscendStoreConnector)
+        ]
+        for connector in other_connectors + pool_connectors:
+            connector.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
 
     def update_state_after_alloc(self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int):
         chosen_connector = self._requests_to_connector.get(request.request_id, -1)

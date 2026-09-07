@@ -34,7 +34,7 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8LinearMethod,
     AscendW8A8MXFP8DynamicLinearMethod,
 )
-from vllm_ascend.utils import enable_dsa_cp
+from vllm_ascend.utils import AscendDeviceType, enable_dsa_cp
 
 
 class TestAscendSFABackend(TestBase):
@@ -319,6 +319,140 @@ class TestAscendSFACacheComposition(TestBase):
                     call_kwargs["key_dequant_scale"].data_ptr(),
                     indexer_scale_cache.data_ptr(),
                 )
+
+
+class TestAscendSFASnapshotRestore(TestBase):
+    @staticmethod
+    def _make_impl_with_absorbed_weights(preprocess_type):
+        impl = AscendSFAImpl.__new__(AscendSFAImpl)
+        impl.q_proj = torch.nn.Linear(2, 2, bias=False)
+        impl.W_UV = torch.randn(2, 3)
+        impl.W_UK_T = torch.randn(2, 4)
+        impl.preprocess_type = preprocess_type
+        impl.layer_name = "model.layers.0.self_attn"
+        impl._persist_absorbed_weights()
+        return impl
+
+    def test_absorbed_weights_are_persistent_and_rebound(self):
+        impl = AscendSFAImpl.__new__(AscendSFAImpl)
+        impl.q_proj = torch.nn.Linear(2, 2, bias=False)
+        impl.W_UV = torch.randn(2, 3)
+        impl.W_UK_T = torch.randn(2, 4)
+        original_w_uv = impl.W_UV
+        original_w_uk_t = impl.W_UK_T
+        expected_w_uv = impl.W_UV.clone()
+        expected_w_uk_t = impl.W_UK_T.clone()
+
+        impl._persist_absorbed_weights()
+        state_dict = {name: tensor.clone() for name, tensor in impl.q_proj.state_dict().items()}
+
+        # Registering snapshot buffers must not copy or replace forward tensors.
+        self.assertIs(impl.W_UV, original_w_uv)
+        self.assertIs(impl.W_UK_T, original_w_uk_t)
+        self.assertIn("sfa_w_uv", state_dict)
+        self.assertIn("sfa_w_uk_t", state_dict)
+
+        impl.q_proj._buffers["sfa_w_uv"].zero_()
+        impl.q_proj._buffers["sfa_w_uk_t"].zero_()
+        impl.q_proj.load_state_dict(state_dict)
+        self.assertTrue(impl._rebind_absorbed_weight_buffers())
+        self.assertTrue(torch.equal(impl.W_UV, expected_w_uv))
+        self.assertTrue(torch.equal(impl.W_UK_T, expected_w_uk_t))
+
+    def test_missing_absorbed_weights_fail_restore(self):
+        impl = AscendSFAImpl.__new__(AscendSFAImpl)
+        impl.q_proj = torch.nn.Linear(2, 2, bias=False)
+        impl.layer_name = "model.layers.0.self_attn"
+
+        with self.assertRaisesRegex(RuntimeError, "absorbed weight buffers are missing"):
+            impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+    def test_native_restore_does_not_follow_mlapo_config(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.NATIVE)
+        impl.enable_mlapo = True
+        impl._process_weights_for_fused_mlapo = MagicMock()
+
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+        impl._process_weights_for_fused_mlapo.assert_not_called()
+
+    @patch(
+        "vllm_ascend.attention.sfa_v1.get_ascend_device_type",
+        return_value=AscendDeviceType.A5,
+    )
+    def test_mlapo_restore_follows_selected_preprocess_type(self, _mock_device_type):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.MLAPO)
+        impl.mlapo_is_quantized = True
+        impl._process_weights_for_fused_mlapo_a5 = MagicMock()
+
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+        impl._process_weights_for_fused_mlapo_a5.assert_called_once_with(torch.bfloat16)
+
+    def test_prolog_v3_restore_rebinds_persistent_derived_weights(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.PROLOG_V3)
+        impl._quant_type = AscendW8A8DynamicLinearMethod
+        impl.enable_sparse_sfa_c8 = False
+        names = impl._PROLOG_V3_COMMON_BUFFERS + impl._PROLOG_V3_DYNAMIC_BUFFERS
+        for attr_name, _ in names:
+            setattr(impl, attr_name, torch.randn(2, 2))
+        impl._persist_prolog_v3_derived()
+        state_dict = impl.q_proj.state_dict()
+        self.assertTrue(all(buf_name in state_dict for _, buf_name in names))
+        expected = {attr_name: getattr(impl, attr_name) for attr_name, _ in names}
+        for attr_name, _ in names:
+            setattr(impl, attr_name, torch.empty(0))
+
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+        for attr_name, _ in names:
+            self.assertIs(getattr(impl, attr_name), expected[attr_name])
+
+    def test_prolog_v3_restore_requires_persistent_derived_weights(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.PROLOG_V3)
+        impl._quant_type = None
+        impl.enable_sparse_sfa_c8 = False
+
+        with self.assertRaisesRegex(RuntimeError, "missing persistent PROLOG_V3 buffer"):
+            impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+    def test_prolog_v3_reset_rebuilds_sparse_runtime_inputs(self):
+        impl = AscendSFAImpl.__new__(AscendSFAImpl)
+        impl.topk_indices_buffer = None
+        impl.preprocess_type = PreprocessType.PROLOG_V3
+        impl.enable_sparse_sfa_c8 = True
+        impl.weight_dq = torch.empty(1)
+        impl.sfa_qsfa_k_nope_clip_alpha = None
+        impl.sfa_qsfa_kr_cache_dummy = None
+
+        impl.reset_runtime_state_after_snapshot_restore()
+
+        torch.testing.assert_close(impl.sfa_qsfa_k_nope_clip_alpha, torch.ones(1))
+        self.assertEqual(impl.sfa_qsfa_kr_cache_dummy.numel(), 0)
+        self.assertEqual(impl.sfa_qsfa_kr_cache_dummy.dtype, torch.bfloat16)
+
+    def test_metadata_builder_reset_clears_reusable_length_buffers(self):
+        builder = AscendSFAMetadataBuilder.__new__(AscendSFAMetadataBuilder)
+        builder.actual_seq_lengths_query = torch.full((4,), 7, dtype=torch.int32)
+        builder.actual_seq_lengths_key = torch.full((4,), 11, dtype=torch.int32)
+        builder.spec_actual_seq_lengths_query = [
+            torch.full((4,), 13, dtype=torch.int32),
+            torch.full((4,), 17, dtype=torch.int32),
+        ]
+        builder.spec_actual_seq_lengths_key = [
+            torch.full((4,), 19, dtype=torch.int32),
+            torch.full((4,), 23, dtype=torch.int32),
+        ]
+
+        builder.reset_runtime_state_after_snapshot_restore()
+
+        buffers = [
+            builder.actual_seq_lengths_query,
+            builder.actual_seq_lengths_key,
+            *builder.spec_actual_seq_lengths_query,
+            *builder.spec_actual_seq_lengths_key,
+        ]
+        self.assertTrue(all(torch.count_nonzero(buffer) == 0 for buffer in buffers))
 
 
 class TestAscendSFAKVQuantSparseAttention(TestBase):

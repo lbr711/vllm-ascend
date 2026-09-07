@@ -19,7 +19,9 @@ from typing import Any
 
 import torch
 import torch_npu
+from vllm.config import get_current_vllm_config
 
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes
 from vllm_ascend.utils import (
     COMPRESSED_TENSORS_METHOD,
     maybe_trans_nz,
@@ -115,6 +117,12 @@ class AscendW8A8LinearMethod(AscendLinearScheme):
         layer.aclnn_input_offset = torch.nn.Parameter(
             layer.input_offset.data.repeat(expanding_factor), requires_grad=False
         ).to(layer.aclnn_input_scale.dtype)
+
+        if get_current_vllm_config().snapshot_config is not None:
+            persist_tensor_attributes(
+                layer,
+                ("aclnn_input_scale_reciprocal", "aclnn_input_offset"),
+            )
 
         layer.weight.data = layer.weight.data.transpose(0, 1).contiguous()
         layer.weight.data = maybe_trans_nz(layer.weight.data)

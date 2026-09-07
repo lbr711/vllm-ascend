@@ -495,6 +495,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
     decode_qli_metadata: torch.Tensor | None = None
     prefill_ratio_to_sas_metadata: dict | None = None
     decode_ratio_to_sas_metadata: dict | None = None
+    common_ratio_to_sas_metadata: dict | None = None
     block_size: int = 128
     """
     NOTE: Please read the comment at the top of the file before trying to
@@ -522,6 +523,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.speculative_config = vllm_config.speculative_config
         self.decode_threshold = 1
         self.spec_slot_mapping = None
+        self.spec_sas_metadata = None
         if get_ascend_device_type() in {AscendDeviceType.A5}:
             self.slot_mapping_shape = (vllm_config.scheduler_config.max_num_batched_tokens,)  # type: ignore
         else:
@@ -569,28 +571,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         hf_config = self.model_config.hf_config
 
         if AscendDSAMetadataBuilder.hadamard is None:
-            if hf_config.model_type == "deepseek_v4":
-                indexer_head_dim = hf_config.index_head_dim
-                try:
-                    from scipy.linalg import hadamard  # type: ignore[import-untyped]
-                except ImportError as e:
-                    raise ImportError("Please install scipy") from e
-                log_dim = math.ceil(math.log2(indexer_head_dim))
-                dim_padded = 2**log_dim
-                if self.vllm_config.model_config.enable_sleep_mode:
-                    # Sleep mode allocates KV inside CaMemAllocator; tag Hadamard so
-                    # sleep/wake does not treat it as KV cache.
-                    from vllm_ascend.device_allocator.camem import CaMemAllocator
-
-                    allocator = CaMemAllocator.get_instance()
-                    with allocator.use_allocation_tag(CaMemAllocator.sleep_persistent_tag):
-                        AscendDSAMetadataBuilder.hadamard = torch.tensor(
-                            hadamard(dim_padded, dtype=float), dtype=torch.float, device=self.device
-                        ).to(torch.bfloat16)
-                else:
-                    AscendDSAMetadataBuilder.hadamard = torch.tensor(
-                        hadamard(dim_padded, dtype=float), dtype=torch.float, device=self.device
-                    ).to(torch.bfloat16)
+            self.build_hadamard(hf_config, self.device, self.vllm_config.model_config.enable_sleep_mode)
         self.start_pos_prefill = torch.zeros(scheduler_config.max_num_seqs, dtype=torch.int32, device=self.device)
         self.start_pos_decode = torch.zeros(scheduler_config.max_num_seqs, dtype=torch.int32, device=self.device)
         self.decode_sas_metadata = torch.zeros(1024, dtype=torch.int32, device=self.device)
@@ -602,6 +583,100 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         # Note(qcs): we use two dimension slot_mapping for kvcache with shape
         # [block_nums, block_size, head_num, head_dim]
         self.slot_mapping = torch.zeros(self.slot_mapping_shape, dtype=torch.int32, device=self.device)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        """Clear reusable request metadata while preserving buffer addresses."""
+        self.num_decodes = 0
+        self.num_prefills = 0
+        self.num_decode_tokens = 0
+        self.num_prefill_tokens = 0
+        self.num_actual_tokens = None
+        self.cu_seq_lens_cpu = None
+        self.context_lens_cpu = None
+        self.block_table = None
+        self.graph_pad_size = 0
+        self.query_lens = None
+        self.seq_lens = None
+
+        for metadata_cache in (
+            self.prefill_ratio_to_sas_metadata,
+            self.decode_ratio_to_sas_metadata,
+            self.common_ratio_to_sas_metadata,
+        ):
+            if metadata_cache is not None:
+                metadata_cache.clear()
+
+        for tensor in (
+            self.start_pos_prefill,
+            self.start_pos_decode,
+            self.prefill_sas_metadata,
+            self.prefill_qli_metadata,
+            self.decode_sas_metadata,
+            self.decode_qli_metadata,
+            self.prefill_qli_seqused_k,
+            self.prefill_qli_cmp_residual_k,
+            self.decode_qli_seqused_k,
+            self.decode_qli_cmp_residual_k,
+            self.cu_seqlens_ori_kv,
+            self.cu_seqlens_cmp_kv,
+            self.seqused_q,
+            self._zero_i32,
+            self.slot_mapping,
+        ):
+            tensor.zero_()
+
+        if self.spec_slot_mapping is not None:
+            for tensor in self.spec_slot_mapping:
+                tensor.zero_()
+        if self.spec_sas_metadata is not None:
+            for tensor in self.spec_sas_metadata:
+                tensor.zero_()
+        self._device_metadata_tasks = ()
+
+    @classmethod
+    def build_hadamard(cls, hf_config, device, enable_sleep_mode: bool = False) -> bool:
+        """Build the class-level ``hadamard`` rotation matrix used by the DSA
+        lightning indexer (q/k are rotated via ``F.linear(x, hadamard)`` before
+        quantization). Returns True if a tensor was (re)built.
+
+        [snapshot] This is a plain class attribute holding a *device* tensor, not
+        an ``nn.Module`` buffer, so it is neither serialized by ``dump_model`` nor
+        rebuilt by the duck-typed ``rebuild_derived_tensors_after_snapshot_restore`` scan.
+        Its backing device memory is invalidated (observed as all-zero) by
+        suspend/resume; a zero hadamard makes ``F.linear(x, 0) == 0``, zeroing the
+        indexer q/k and collapsing ``query_dequant_scale`` / ``key_dequant_scale``
+        to zero for every layer. ``reload_hadamard_after_restore`` calls this to
+        recompute it in place after a restore.
+        """
+        if getattr(hf_config, "model_type", None) != "deepseek_v4":
+            return False
+        try:
+            from scipy.linalg import hadamard  # type: ignore[import-untyped]
+        except ImportError as e:
+            raise ImportError("Please install scipy") from e
+        indexer_head_dim = hf_config.index_head_dim
+        log_dim = math.ceil(math.log2(indexer_head_dim))
+        dim_padded = 2**log_dim
+        if enable_sleep_mode:
+            # Sleep mode allocates KV inside CaMemAllocator; tag Hadamard so
+            # sleep/wake does not treat it as KV cache.
+            from vllm_ascend.device_allocator.camem import CaMemAllocator
+
+            allocator = CaMemAllocator.get_instance()
+            with allocator.use_allocation_tag(CaMemAllocator.sleep_persistent_tag):
+                cls.hadamard = torch.tensor(hadamard(dim_padded, dtype=float), dtype=torch.float, device=device).to(
+                    torch.bfloat16
+                )
+        else:
+            cls.hadamard = torch.tensor(hadamard(dim_padded, dtype=float), dtype=torch.float, device=device).to(
+                torch.bfloat16
+            )
+        return True
+
+    @classmethod
+    def reload_hadamard_after_restore(cls, hf_config, device) -> bool:
+        """Rebuild the class-level Hadamard tensor after restore."""
+        return cls.build_hadamard(hf_config, device)
 
     @classmethod
     def get_cudagraph_support(

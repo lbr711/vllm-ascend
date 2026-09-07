@@ -72,6 +72,15 @@ class TestGetZmqRpcPathLookup(unittest.TestCase):
 
 
 class TestKVPoolScheduler(unittest.TestCase):
+    def test_rebuild_kv_transfer_endpoint_resets_scheduler_backend(self):
+        scheduler = object.__new__(KVPoolScheduler)
+        scheduler.store_scheduler = MagicMock()
+        scheduler.backend_name = "mooncake"
+
+        scheduler.rebuild_kv_transfer_endpoint("10.0.0.2")
+
+        scheduler.store_scheduler.reset_after_snapshot.assert_called_once_with("10.0.0.2")
+
     def _make_config(self, kv_role="kv_producer", extra_config=None, block_size=16):
         config = MagicMock()
         config.kv_transfer_config.kv_role = kv_role
