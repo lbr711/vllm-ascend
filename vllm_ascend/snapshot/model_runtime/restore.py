@@ -133,6 +133,8 @@ def _reset_attention_builders_after_restore(runner) -> None:
         for attn_group in kv_groups
         for builder in attn_group.metadata_builders
     ]
+    # DFlash, DSpark, and Step3.5 MTP inherit from AscendEagleProposer and
+    # maintain separate attention groups whose request metadata must also reset.
     if isinstance(runner.drafter, AscendEagleProposer):
         builders.extend(
             builder
