@@ -127,20 +127,24 @@ def _reset_attention_builders_after_restore(runner) -> None:
     Builder hooks clear request sequence lengths, block/slot mappings, context
     chunk metadata, attention-mask caches, and context-parallel staging tensors.
     """
+    # Target-model metadata builders come from the KV-cache attention groups
+    # constructed and owned directly by the model runner.
     builders = [
         builder
         for kv_groups in runner.attn_groups
         for attn_group in kv_groups
         for builder in attn_group.metadata_builders
     ]
-    # DFlash, DSpark, and Step3.5 MTP inherit from AscendEagleProposer and
-    # maintain separate attention groups whose request metadata must also reset.
+    # Drafter metadata builders come from the drafter's independent attention
+    # groups. DFlash, DSpark, and Step3.5 MTP all inherit AscendEagleProposer.
     if isinstance(runner.drafter, AscendEagleProposer):
         builders.extend(
             builder
             for attn_group in runner.drafter.draft_attn_groups
             for builder in attn_group.metadata_builders
         )
+    # Attention-mask builders are helper objects owned by the metadata builders
+    # above and carry their own per-request mask caches.
     builders_and_masks = builders + [
         builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")
     ]
