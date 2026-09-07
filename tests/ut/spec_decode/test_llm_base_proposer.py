@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 from vllm.config import CUDAGraphMode
 
+from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.llm_base_proposer import AscendSpecDecodeBaseProposer
 from vllm_ascend.spec_decode.utils import _disable_flash_comm_v1_context
 
@@ -84,6 +85,18 @@ def test_restore_runtime_buffers_restores_arange() -> None:
     proposer.restore_runtime_buffers()
 
     torch.testing.assert_close(proposer.arange, torch.from_numpy(proposer.token_arange_np))
+
+
+def test_dflash_restore_runtime_buffers_restores_both_aranges() -> None:
+    proposer = AscendDflashProposer.__new__(AscendDflashProposer)
+    proposer.token_arange_np = np.arange(8, dtype=np.int32)
+    proposer.arange = torch.zeros(8, dtype=torch.int32)
+    proposer.arange_dflash = torch.zeros(13, dtype=torch.int32)
+
+    proposer.restore_runtime_buffers()
+
+    torch.testing.assert_close(proposer.arange, torch.arange(8, dtype=torch.int32))
+    torch.testing.assert_close(proposer.arange_dflash, torch.arange(13, dtype=torch.int32))
 
 
 class TestDisablePaddedDrafterBatchWithFullGraph:

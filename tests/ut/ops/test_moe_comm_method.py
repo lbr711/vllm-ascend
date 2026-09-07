@@ -114,11 +114,11 @@ class TestMoECommMethod(TestBase):
 
     def test_fused_mc2_reset_runtime_state_after_snapshot_restore_releases_symm_buffer(self):
         comm_impl = object.__new__(FusedMC2CommImpl)
-        comm_impl._mega_moe_symm_buffer = object()
+        comm_impl.mega_moe_symm_buffer = object()
 
         comm_impl.reset_runtime_state_after_snapshot_restore()
 
-        self.assertIsNone(comm_impl._mega_moe_symm_buffer)
+        self.assertIsNone(comm_impl.mega_moe_symm_buffer)
 
     def test_fused_mc2_situ_falls_back_to_decomposed_mc2_pipeline(self):
         comm_impl = object.__new__(FusedMC2CommImpl)

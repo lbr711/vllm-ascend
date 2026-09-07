@@ -554,6 +554,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
     decode_qli_metadata: torch.Tensor
     prefill_ratio_to_sas_metadata: dict | None = None
     decode_ratio_to_sas_metadata: dict | None = None
+    common_ratio_to_sas_metadata: dict | None = None
     block_size: int = 128
     """
     NOTE: Please read the comment at the top of the file before trying to
@@ -581,6 +582,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.speculative_config = vllm_config.speculative_config
         self.decode_threshold = 1
         self.spec_slot_mapping = None
+        self.spec_sas_metadata = None
         if get_ascend_device_type() in {AscendDeviceType.A5}:
             self.slot_mapping_shape = (vllm_config.scheduler_config.max_num_batched_tokens,)  # type: ignore
         else:
@@ -655,6 +657,55 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         # Note(qcs): we use two dimension slot_mapping for kvcache with shape
         # [block_nums, block_size, head_num, head_dim]
         self.slot_mapping = torch.zeros(self.slot_mapping_shape, dtype=torch.int32, device=self.device)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        """Clear reusable request metadata while preserving buffer addresses."""
+        self.num_decodes = 0
+        self.num_prefills = 0
+        self.num_decode_tokens = 0
+        self.num_prefill_tokens = 0
+        self.num_actual_tokens = None
+        self.cu_seq_lens_cpu = None
+        self.context_lens_cpu = None
+        self.block_table = None
+        self.graph_pad_size = 0
+        self.query_lens = None
+        self.seq_lens = None
+
+        for metadata_cache in (
+            self.prefill_ratio_to_sas_metadata,
+            self.decode_ratio_to_sas_metadata,
+            self.common_ratio_to_sas_metadata,
+        ):
+            if metadata_cache is not None:
+                metadata_cache.clear()
+
+        for tensor in (
+            self.start_pos_prefill,
+            self.start_pos_decode,
+            self.prefill_sas_metadata,
+            self.prefill_qli_metadata,
+            self.decode_sas_metadata,
+            self.decode_qli_metadata,
+            self.prefill_qli_seqused_k,
+            self.prefill_qli_cmp_residual_k,
+            self.decode_qli_seqused_k,
+            self.decode_qli_cmp_residual_k,
+            self.cu_seqlens_ori_kv,
+            self.cu_seqlens_cmp_kv,
+            self.seqused_q,
+            self._zero_i32,
+            self.slot_mapping,
+        ):
+            tensor.zero_()
+
+        if self.spec_slot_mapping is not None:
+            for tensor in self.spec_slot_mapping:
+                tensor.zero_()
+        if self.spec_sas_metadata is not None:
+            for tensor in self.spec_sas_metadata:
+                tensor.zero_()
+        self._device_metadata_tasks = ()
 
     @classmethod
     def build_hadamard(cls, hf_config, device, enable_sleep_mode: bool = False) -> bool:

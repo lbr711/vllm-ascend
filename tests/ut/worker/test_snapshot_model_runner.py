@@ -9,6 +9,7 @@ from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
     reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runtime.restore import (
+    _reset_attention_builders_after_restore,
     _reset_block_table_runtime_state,
     _reset_runner_input_runtime_state,
     _reset_target_and_drafter_modules_after_restore,
@@ -164,6 +165,27 @@ def test_reset_runner_input_runtime_state():
     assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
     assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
     runner.dcp_manager.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
+
+
+def test_reset_attention_builders_includes_drafter_groups():
+    target_builder = MagicMock()
+    draft_builder = MagicMock()
+    target_group = SimpleNamespace(metadata_builders=[target_builder])
+    draft_group = SimpleNamespace(metadata_builders=[draft_builder])
+
+    class _Drafter:
+        draft_attn_groups = [draft_group]
+
+    runner = SimpleNamespace(
+        attn_groups=[[target_group]],
+        drafter=_Drafter(),
+    )
+
+    with patch("vllm_ascend.snapshot.model_runtime.restore.AscendEagleProposer", _Drafter):
+        _reset_attention_builders_after_restore(runner)
+
+    target_builder.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
+    draft_builder.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
 
 
 def test_reset_target_and_drafter_modules_after_restore():
