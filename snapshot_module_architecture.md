@@ -72,63 +72,73 @@ vLLM-Ascend
 
 ```mermaid
 flowchart TB
-    Controller[Motor Controller]
-    External[外部快照管理组件]
-    Metadata["snapshot_metadata"]
+    Controller["Motor Controller（容器外）"]
+    External["外部快照管理组件（容器外）"]
 
-    subgraph Motor["Motor：部署与生命周期编排"]
-        NodeManager[NodeManager API]
-        Register[RegisterManager]
-        Daemon["Daemon / NativeEngineService"]
-        Supervisor[ProcessSupervisor]
-        Heartbeat[HeartbeatManager]
+    subgraph Container["容器"]
+        direction TB
+
+        subgraph Motor["Motor NodeManager"]
+            direction LR
+            NodeManager[NodeManager API]
+            Register[RegisterManager]
+            Daemon[Daemon]
+            NativeEngine[NativeEngineService]
+            Supervisor[ProcessSupervisor]
+            Heartbeat[HeartbeatManager]
+
+            NodeManager --> Register
+            NodeManager --> Daemon
+            Daemon --> NativeEngine
+            NativeEngine --> Supervisor
+            Heartbeat -->|查询 RuntimeState| Daemon
+        end
+
+        subgraph VLLM["vLLM：通用快照控制面"]
+            direction LR
+            Sentinel[Snapshot Sentinel]
+            API[Snapshot API]
+            Monitor[SnapshotMonitor]
+            Client[EngineCoreClient]
+            Core[EngineCore]
+            Scheduler[Scheduler]
+            Executor[ModelExecutor]
+
+            Sentinel -->|调用 suspend / resume| API
+            API -->|读取阶段完成状态| Monitor
+            API --> Client
+            Client --> Core
+            Core --> Scheduler
+            Core --> Executor
+        end
+
+        subgraph Ascend["vLLM-Ascend：NPU 数据面"]
+            direction LR
+            Worker[NPUWorker]
+            Runtime[Ascend Runtime Snapshot API]
+            Dist["HCCL / 并行通信域"]
+            Model["模型 checkpoint / 派生 Tensor / 运行时状态"]
+            Graph["Triton Kernel Cache / ACL Graph"]
+            KV[Ascend KV Connector]
+
+            Worker --> Runtime
+            Worker --> Dist
+            Worker --> Model
+            Worker --> Graph
+            Worker --> KV
+        end
+
+        Metadata["snapshot_metadata"]
+        Register -->|读取/更新| Metadata
+        Sentinel -->|读取生命周期参数| Metadata
+        Supervisor -->|拉起 vllm serve| API
+        Supervisor <-.->|"GET /snapshot/health；200 完成 / 202 未完成"| API
+        Executor --> Worker
     end
 
-    subgraph VLLM["vLLM：通用控制面"]
-        API[Snapshot API]
-        Monitor[SnapshotMonitor]
-        Sentinel[Snapshot Sentinel]
-        Client[EngineCoreClient]
-        Core[EngineCore]
-        Scheduler[Scheduler]
-        Executor[ModelExecutor]
-    end
-
-    subgraph Ascend["vLLM-Ascend：NPU 数据面"]
-        Worker[NPUWorker]
-        Runtime[Ascend Runtime Snapshot API]
-        Dist["HCCL / 并行通信域"]
-        Model["模型 checkpoint 与运行时状态"]
-        Graph["Triton Cache / ACL Graph"]
-        KV[Ascend KV Connector]
-    end
-
-    Controller -->|start| NodeManager
-    NodeManager -->|注册| Controller
-    NodeManager --> Register
-    NodeManager --> Daemon
-    NodeManager --> Heartbeat
-    Daemon --> Supervisor
-    Supervisor -->|拉起 vllm serve| API
-    Heartbeat -->|查询 RuntimeState| Supervisor
-    Heartbeat -->|上报 EndpointStatus| Controller
-    Register -->|读取/更新| Metadata
+    Controller <-->|"注册 / start / heartbeat"| NodeManager
     External -->|写入 checkpoint 状态| Metadata
     External -->|保存/恢复容器与 NPU 状态| Runtime
-    Sentinel -->|自动调用| API
-    Sentinel -->|读取生命周期参数| Metadata
-    API --> Monitor
-    API --> Client
-    Client --> Core
-    Core --> Executor
-    Core --> Scheduler
-    Executor --> Worker
-    Worker --> Runtime
-    Worker --> Dist
-    Worker --> Model
-    Worker --> Graph
-    Worker --> KV
-    Scheduler --> KV
 ```
 
 ## 3. vLLM：通用快照控制面
@@ -592,7 +602,7 @@ Motor、vLLM Sentinel 和外部快照组件通过同一 metadata 协作，但所
 
 ### 5.4 健康探测与状态映射
 
-`NativeEngineService` 在启用快照时将探测路径切换为 `/snapshot/health`，否则使用原生 `/health`。`ProcessSupervisor` 将进程与 HTTP 探测结果抽象为 `RuntimeState`，`HeartbeatManager` 再将其转换为上报 Controller 的 `EndpointStatus`。
+`NativeEngineService` 在启用快照时将探测路径切换为 `/snapshot/health`，否则使用原生 `/health`。在自动快照场景中，Motor 通过该接口判断冷启动时的 `/suspend` 或恢复后的 `/resume` 是否完成。`ProcessSupervisor` 将探测结果抽象为 `RuntimeState`，`HeartbeatManager` 再将其转换为上报 Controller 的 `EndpointStatus`。
 
 | 进程/探测结果 | `RuntimeState` | `EndpointStatus` |
 | --- | --- | --- |
@@ -603,7 +613,7 @@ Motor、vLLM Sentinel 和外部快照组件通过同一 metadata 协作，但所
 | 子进程正在启动 | `STARTING` | 保持原 endpoint 状态 |
 | 子进程正在停止 | `STOPPING` | 保持原 endpoint 状态 |
 
-`202` 的含义是 vLLM HTTP 服务已经可访问，但当前自动快照生命周期阶段尚未完成；它不是探测失败。只有 Sentinel 对应阶段完成后，`/snapshot/health` 才返回 `200`，Motor 才会上报 `NORMAL`。
+`202` 的含义是 vLLM HTTP 服务已经可访问，但冷启动时的 `suspend_done` 或恢复后的 `resume_done` 尚未置位；它不是探测失败。对应完成标志置位后，`/snapshot/health` 返回 `200`，Motor 才将 endpoint 更新为 `NORMAL`。
 
 冷启动阶段即使 endpoint 已全部 `NORMAL`，`HeartbeatManager` 仍会检查 metadata 中的 `checkpoint`。在外部 checkpoint 标记为 `done` 前暂停向 Controller 上报 heartbeat，以 checkpoint 完成作为恢复后重新注册的屏障。
 
