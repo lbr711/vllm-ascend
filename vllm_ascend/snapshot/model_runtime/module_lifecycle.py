@@ -6,7 +6,6 @@ from collections.abc import Iterable, Iterator
 
 import torch
 import torch.nn as nn
-from vllm.logger import logger
 
 
 def _iter_modules_and_impls(models: Iterable[nn.Module | None]) -> Iterator[object]:
@@ -44,21 +43,8 @@ def rebuild_model_derived_tensors_after_snapshot_restore(
     label: str,
 ) -> None:
     """Rebuild non-persistent derived tensors through model module hooks."""
-    rebuilt_count = 0
     for item in _iter_modules_and_impls((model,)):
         rebuild = getattr(item, "rebuild_derived_tensors_after_snapshot_restore", None)
         if not callable(rebuild):
             continue
         rebuild(act_dtype)
-        rebuilt_count += 1
-
-    logger.info(
-        "[snapshot][model] derived tensors rebuilt: model=%s hooks=%d",
-        label,
-        rebuilt_count,
-    )
-    if rebuilt_count == 0:
-        logger.warning(
-            "[snapshot][model] no derived-tensor rebuild hooks found; attention decode may use stale tensors: model=%s",
-            label,
-        )

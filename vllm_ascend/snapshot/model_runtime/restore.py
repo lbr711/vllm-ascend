@@ -5,7 +5,6 @@ import os
 
 import torch.nn as nn
 from vllm.distributed.parallel_state import get_tp_group
-from vllm.logger import logger
 
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
@@ -146,7 +145,6 @@ def _reset_attention_builders_after_restore(runner) -> None:
     builders_and_masks = builders + [
         builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")
     ]
-    reset_count = 0
     seen_ids: set[int] = set()
     for builder_or_mask in builders_and_masks:
         if id(builder_or_mask) in seen_ids:
@@ -155,12 +153,6 @@ def _reset_attention_builders_after_restore(runner) -> None:
         reset_state = getattr(builder_or_mask, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset_state):
             reset_state()
-            reset_count += 1
-    logger.info(
-        "[snapshot][model] attention builder state reset: total=%d reset=%d",
-        len(builders),
-        reset_count,
-    )
 
 
 def _reset_runner_input_runtime_state(runner) -> None:
@@ -187,11 +179,7 @@ def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     Modules refresh their own state and forward the hook to backend
     implementations they own.
     """
-    reset_count = reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
-    logger.info(
-        "[snapshot][model] module runtime state reset: hooks=%d",
-        reset_count,
-    )
+    reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
 
 
 def _reset_block_table_runtime_state(runner) -> None:
@@ -205,7 +193,3 @@ def _reset_block_table_runtime_state(runner) -> None:
         buf = block_table.block_table
         buf.gpu.zero_()
         buf.cpu.zero_()
-    logger.info(
-        "[snapshot][model] block-table buffers reset: tables=%d",
-        len(block_tables),
-    )

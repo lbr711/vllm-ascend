@@ -9,7 +9,6 @@ from vllm.distributed.parallel_state import (
     destroy_model_parallel,
     reset_group_name_registry,
 )
-from vllm.logger import logger
 
 _HCCL_TEARDOWN_ENABLED = False
 
@@ -33,7 +32,6 @@ def is_snapshot_hccl_teardown_enabled() -> bool:
 def cleanup_dist_env_for_snapshot(shutdown_ray: bool = False) -> None:
     """Clear distributed state before rebuilding it after restore."""
     destroy_model_parallel()
-    logger.info("[snapshot][parallel] model-parallel groups destroyed")
     destroy_distributed_environment()
     reset_group_name_registry()
     if shutdown_ray:

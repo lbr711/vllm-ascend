@@ -440,7 +440,6 @@ class KVPoolWorker:
         self.m_store.prepare_for_snapshot_restore()
 
     def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
-        logger.info("[snapshot][rebuild] resetting worker KV pool backend %s", self.backend_name)
         self.m_store.reset_after_snapshot(local_ip)
         self._allocated_gvas.clear()
 

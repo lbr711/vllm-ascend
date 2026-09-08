@@ -6,7 +6,6 @@ from collections.abc import Iterable
 
 import torch
 import torch.nn as nn
-from vllm.logger import logger
 
 
 def persist_tensor_attributes(module: nn.Module, names: Iterable[str]) -> None:
@@ -43,16 +42,7 @@ def restore_global_tensor_state(
     from vllm_ascend.attention.sfa_v1 import AscendSFAImpl
     from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
 
-    restored: list[str] = []
-    if AscendDSAMetadataBuilder.reload_hadamard_after_restore(hf_config, device):
-        restored.append("dsa.hadamard")
-    if AscendDSACPMetadataBuilder.reload_hadamard_after_restore(hf_config, device):
-        restored.append("dsa_cp.hadamard")
-    if AscendSFAImpl.reload_hadamard_after_restore(device):
-        restored.append("sfa.hadamard")
-    if reload_cos_and_sin_after_restore(model):
-        restored.append("mla_rope.cos_sin")
-    logger.info(
-        "[snapshot][model] global tensors rebuilt: tensors=%s",
-        ",".join(restored) if restored else "none",
-    )
+    AscendDSAMetadataBuilder.reload_hadamard_after_restore(hf_config, device)
+    AscendDSACPMetadataBuilder.reload_hadamard_after_restore(hf_config, device)
+    AscendSFAImpl.reload_hadamard_after_restore(device)
+    reload_cos_and_sin_after_restore(model)

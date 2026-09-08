@@ -228,7 +228,6 @@ class KVPoolScheduler:
         self.store_scheduler.prepare_for_snapshot_restore()
 
     def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
-        logger.info("[snapshot][rebuild] resetting scheduler KV pool backend %s", self.backend_name)
         self.store_scheduler.reset_after_snapshot(local_ip)
 
     def _get_or_create_request_tracker(self, req_id: str) -> RequestTracker:

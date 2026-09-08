@@ -49,13 +49,7 @@ def _call_aclrt_snapshot_api(worker, api_name: str) -> None:
     api.argtypes = [c_int, c_void_p]
     api.restype = c_int
     result = api(os.getpid(), None)
-    if result == 0:
-        logger.info(
-            "[snapshot][worker] runtime API completed: rank=%s api=%s",
-            worker.rank,
-            api_name,
-        )
-    else:
+    if result != 0:
         logger.error(
             "[snapshot][worker] runtime API failed: rank=%s api=%s status=%s",
             worker.rank,
@@ -64,21 +58,21 @@ def _call_aclrt_snapshot_api(worker, api_name: str) -> None:
         )
 
 
-def _run_timed_steps(worker, steps) -> None:
-    for step_name, step_fn in steps:
-        logger.info(
-            "[snapshot][worker] step started: rank=%s step=%s",
-            worker.rank,
-            step_name,
-        )
-        start = time.perf_counter()
+def _run_timed_steps(worker, operation: str, steps) -> None:
+    operation_start = time.perf_counter()
+    logger.info(
+        "[snapshot][worker] %s started: rank=%s",
+        operation,
+        worker.rank,
+    )
+    for _, step_fn in steps:
         step_fn()
-        logger.info(
-            "[snapshot][worker] step completed: rank=%s step=%s duration=%.2f s",
-            worker.rank,
-            step_name,
-            time.perf_counter() - start,
-        )
+    logger.info(
+        "[snapshot][worker] %s completed: rank=%s duration=%.2f s",
+        operation,
+        worker.rank,
+        time.perf_counter() - operation_start,
+    )
 
 
 def suspend_worker(worker, model_save_path: str | None = None) -> None:
@@ -88,7 +82,7 @@ def suspend_worker(worker, model_save_path: str | None = None) -> None:
         ("lock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")),
         ("snapshot_process_backup", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),
     )
-    _run_timed_steps(worker, steps)
+    _run_timed_steps(worker, "suspend", steps)
 
 
 def unlock_worker(worker) -> None:
@@ -118,7 +112,7 @@ def resume_worker(
             lambda: _rebuild_kv_transfer_engine(worker, local_ip, new_engine_id),
         ),
     )
-    _run_timed_steps(worker, steps)
+    _run_timed_steps(worker, "resume", steps)
 
 
 def _reset_triton_kernel_caches() -> None:
@@ -133,15 +127,7 @@ def _parallel_group_cleanup(worker) -> None:
     snapshot_enabled = worker.vllm_config.snapshot_config is not None
     with snapshot_hccl_teardown(snapshot_enabled):
         destroy_ascend_model_parallel()
-        logger.info(
-            "[snapshot][parallel] Ascend model-parallel groups destroyed: rank=%s",
-            worker.rank,
-        )
         cleanup_dist_env_for_snapshot()
-        logger.info(
-            "[snapshot][parallel] distributed environment cleaned up: rank=%s",
-            worker.rank,
-        )
 
 
 def _rebuild_parallel_groups(worker) -> None:
@@ -151,15 +137,7 @@ def _rebuild_parallel_groups(worker) -> None:
     dist.set_debug_level(dist.DebugLevel.INFO)
 
     rebuild_time_start = time.time()
-    logger.info(
-        "[snapshot][parallel] group rebuild started: rank=%s",
-        worker.rank,
-    )
     _parallel_group_cleanup(worker)
-    logger.info(
-        "[snapshot][parallel] initializing HCCL and model-parallel groups: rank=%s",
-        worker.rank,
-    )
 
     master_ip = worker.vllm_config.parallel_config.data_parallel_master_ip
     if not master_ip:
@@ -201,11 +179,6 @@ def _rebuild_parallel_groups(worker) -> None:
             reset_state = getattr(comm_method_or_dispatcher, "reset_runtime_state_after_snapshot_restore", None)
             if callable(reset_state):
                 reset_state()
-        logger.info(
-            "[snapshot][parallel] cached MoE and HCCL groups refreshed: rank=%s",
-            worker.rank,
-        )
-
     logger.info(
         "[snapshot][parallel] group rebuild completed: rank=%s duration=%.2f s",
         worker.rank,
@@ -237,7 +210,7 @@ def _rebuild_kv_transfer_engine(worker, local_ip: str, new_engine_id: str | None
 
 def _recapture_graph(worker) -> None:
     if worker.model_config.enforce_eager:
-        logger.info(
+        logger.debug(
             "[snapshot][worker] graph recapture skipped: rank=%s reason=enforce_eager",
             worker.rank,
         )
