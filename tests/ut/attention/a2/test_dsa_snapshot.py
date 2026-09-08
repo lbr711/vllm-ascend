@@ -23,14 +23,8 @@ def test_metadata_builder_reset_restores_cold_start_state():
     tensor_names = (
         "start_pos_prefill",
         "start_pos_decode",
-        "prefill_sas_metadata",
-        "prefill_qli_metadata",
         "decode_sas_metadata",
         "decode_qli_metadata",
-        "prefill_qli_seqused_k",
-        "prefill_qli_cmp_residual_k",
-        "decode_qli_seqused_k",
-        "decode_qli_cmp_residual_k",
         "cu_seqlens_ori_kv",
         "cu_seqlens_cmp_kv",
         "seqused_q",
@@ -41,7 +35,6 @@ def test_metadata_builder_reset_restores_cold_start_state():
         setattr(builder, name, torch.ones(2, dtype=torch.int32))
     builder.spec_slot_mapping = [torch.ones(2, dtype=torch.int32)]
     builder.spec_sas_metadata = [torch.ones(2, dtype=torch.int32)]
-    builder._device_metadata_tasks = (object(),)
 
     builder.reset_runtime_state_after_snapshot_restore()
 
@@ -59,7 +52,6 @@ def test_metadata_builder_reset_restores_cold_start_state():
     assert builder.prefill_ratio_to_sas_metadata == {}
     assert builder.decode_ratio_to_sas_metadata == {}
     assert builder.common_ratio_to_sas_metadata == {}
-    assert builder._device_metadata_tasks == ()
     assert all(torch.count_nonzero(getattr(builder, name)) == 0 for name in tensor_names)
     assert torch.count_nonzero(builder.spec_slot_mapping[0]) == 0
     assert torch.count_nonzero(builder.spec_sas_metadata[0]) == 0

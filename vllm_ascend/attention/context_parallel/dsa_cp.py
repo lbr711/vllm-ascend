@@ -287,7 +287,6 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         common_ratio_to_sas_metadata = getattr(self, "common_ratio_to_sas_metadata", None)
         if common_ratio_to_sas_metadata is not None:
             common_ratio_to_sas_metadata.clear()
-        self._device_metadata_tasks = ()
 
     @classmethod
     def build_hadamard(cls, hf_config, device, enable_sleep_mode: bool = False) -> bool:

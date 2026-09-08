@@ -33,7 +33,6 @@ def test_metadata_builder_reset_restores_cold_start_state():
         "input_positions": torch.ones(1),
         "cp_sas_c4": torch.ones(1),
     }
-    builder._device_metadata_tasks = (object(),)
 
     builder.reset_runtime_state_after_snapshot_restore()
 
@@ -46,7 +45,6 @@ def test_metadata_builder_reset_restores_cold_start_state():
     assert builder.seq_lens is None
     assert builder.seq_lens_cpu is None
     assert builder.common_ratio_to_sas_metadata == {}
-    assert builder._device_metadata_tasks == ()
 
     buffers = [
         builder.start_pos_prefill,

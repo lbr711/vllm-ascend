@@ -609,14 +609,8 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         for tensor in (
             self.start_pos_prefill,
             self.start_pos_decode,
-            self.prefill_sas_metadata,
-            self.prefill_qli_metadata,
             self.decode_sas_metadata,
             self.decode_qli_metadata,
-            self.prefill_qli_seqused_k,
-            self.prefill_qli_cmp_residual_k,
-            self.decode_qli_seqused_k,
-            self.decode_qli_cmp_residual_k,
             self.cu_seqlens_ori_kv,
             self.cu_seqlens_cmp_kv,
             self.seqused_q,
@@ -631,7 +625,6 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         if self.spec_sas_metadata is not None:
             for tensor in self.spec_sas_metadata:
                 tensor.zero_()
-        self._device_metadata_tasks = ()
 
     @classmethod
     def build_hadamard(cls, hf_config, device, enable_sleep_mode: bool = False) -> bool:
