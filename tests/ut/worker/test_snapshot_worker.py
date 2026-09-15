@@ -156,6 +156,19 @@ def test_call_aclrt_snapshot_api_invokes_aclrt_library(worker):
     mock_api.assert_called_once()
 
 
+def test_call_aclrt_snapshot_api_raises_on_runtime_failure(worker):
+    from vllm_ascend.snapshot.worker_lifecycle import _call_aclrt_snapshot_api
+
+    mock_lib = MagicMock()
+    mock_lib.aclrtSnapShotProcessLock = MagicMock(return_value=1)
+
+    with (
+        patch("vllm_ascend.snapshot.worker_lifecycle._get_acl_rt_lib", return_value=mock_lib),
+        pytest.raises(RuntimeError, match="aclrtSnapShotProcessLock status=1"),
+    ):
+        _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")
+
+
 @pytest.mark.parametrize("snapshot_config", [object(), None])
 def test_parallel_group_clean_up_destroys_parallel_and_dist_env(worker, snapshot_config):
     from vllm_ascend.snapshot.worker_lifecycle import _parallel_group_cleanup

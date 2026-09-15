@@ -56,6 +56,7 @@ def _call_aclrt_snapshot_api(worker, api_name: str) -> None:
             api_name,
             result,
         )
+        raise RuntimeError(f"Snapshot runtime API failed: api={api_name} status={result}")
 
 
 def _run_timed_steps(worker, operation: str, steps) -> None:

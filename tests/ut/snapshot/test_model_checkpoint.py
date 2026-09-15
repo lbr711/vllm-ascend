@@ -33,6 +33,11 @@ def test_restore_state_dict_copies_parameters_and_buffers(tmp_path) -> None:
     torch.testing.assert_close(model.scale, torch.tensor([3.0, 4.0]))
 
 
+def test_restore_state_dict_rejects_missing_checkpoint(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError, match="Snapshot checkpoint does not exist"):
+        restore_state_dict(_Model(), str(tmp_path / "missing.pth"), "model")
+
+
 @patch(
     "vllm_ascend.snapshot.model_runtime.h2d_copy.torch_npu.npu_format_cast",
     side_effect=lambda tensor, _: tensor,

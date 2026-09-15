@@ -43,12 +43,12 @@ def dump_state_dict(model: nn.Module, path: str) -> None:
 
 def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
     if not os.path.exists(path):
-        logger.warning(
-            "[snapshot][checkpoint] restore skipped: model=%s path=%s reason=not_found",
+        logger.error(
+            "[snapshot][checkpoint] restore failed: model=%s path=%s reason=not_found",
             label,
             path,
         )
-        return
+        raise FileNotFoundError(f"Snapshot checkpoint does not exist: {path}")
 
     start = time.time()
     state_dict = torch.load(path, map_location="cpu", mmap=True)
