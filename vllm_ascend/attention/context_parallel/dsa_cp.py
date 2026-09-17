@@ -261,8 +261,6 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             self.start_pos_prefill,
             self.req_sas_metadata,
             self.req_qli_metadata,
-            self.qli_seqused_k,
-            self.qli_cmp_residual_k,
             self.cu_seqlens_ori_kv,
             self.cu_seqlens_cmp_kv,
             self.seqused_q,

@@ -17,8 +17,6 @@ def test_metadata_builder_reset_restores_cold_start_state():
     builder.start_pos_prefill = torch.full((4,), 13, dtype=torch.int32)
     builder.req_sas_metadata = torch.full((8,), 17, dtype=torch.int32)
     builder.req_qli_metadata = torch.full((8,), 19, dtype=torch.int32)
-    builder.qli_seqused_k = torch.full((4,), 21, dtype=torch.int32)
-    builder.qli_cmp_residual_k = torch.full((4,), 22, dtype=torch.int32)
     builder.cu_seqlens_ori_kv = torch.full((4,), 23, dtype=torch.int32)
     builder.cu_seqlens_cmp_kv = torch.full((4,), 29, dtype=torch.int32)
     builder.seqused_q = torch.full((4,), 31, dtype=torch.int32)
@@ -50,8 +48,6 @@ def test_metadata_builder_reset_restores_cold_start_state():
         builder.start_pos_prefill,
         builder.req_sas_metadata,
         builder.req_qli_metadata,
-        builder.qli_seqused_k,
-        builder.qli_cmp_residual_k,
         builder.cu_seqlens_ori_kv,
         builder.cu_seqlens_cmp_kv,
         builder.seqused_q,
