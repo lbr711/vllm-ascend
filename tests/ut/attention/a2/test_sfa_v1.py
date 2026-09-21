@@ -330,6 +330,7 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.W_UK_T = torch.randn(2, 4)
         impl.preprocess_type = preprocess_type
         impl.layer_name = "model.layers.0.self_attn"
+        impl.enable_dsa_cp_with_o_proj_tp = False
         impl._persist_absorbed_weights()
         return impl
 
@@ -375,6 +376,26 @@ class TestAscendSFASnapshotRestore(TestBase):
         impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
 
         impl._process_weights_for_fused_mlapo.assert_not_called()
+
+    def test_restore_rebuilds_dsa_cp_o_proj_aclnn_input_params(self):
+        impl = self._make_impl_with_absorbed_weights(PreprocessType.NATIVE)
+        impl.enable_dsa_cp_with_o_proj_tp = True
+        impl.tp_size = 2
+        impl.o_proj = torch.nn.Module()
+        impl.o_proj.aclnn_input_scale = torch.nn.Parameter(torch.tensor([1.0, 2.0]), requires_grad=False)
+        impl._init_o_proj_aclnn_input_params()
+        stale_full_param = impl.o_proj_full_aclnn_input_params["aclnn_input_scale"]
+
+        impl.o_proj.aclnn_input_scale.data.copy_(torch.tensor([3.0, 4.0]))
+        impl.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+        rebuilt_full_param = impl.o_proj_full_aclnn_input_params["aclnn_input_scale"]
+        self.assertIsNot(rebuilt_full_param, stale_full_param)
+        torch.testing.assert_close(rebuilt_full_param, torch.tensor([3.0, 4.0, 3.0, 4.0]))
+        self.assertEqual(
+            impl.o_proj_tp_aclnn_input_params["aclnn_input_scale"].data_ptr(),
+            impl.o_proj.aclnn_input_scale.data_ptr(),
+        )
 
     @patch(
         "vllm_ascend.attention.sfa_v1.get_ascend_device_type",

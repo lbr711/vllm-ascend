@@ -897,6 +897,9 @@ class AscendSFAImpl(MLAAttentionImpl):
         if not self._rebind_absorbed_weight_buffers():
             raise RuntimeError(f"SFA layer {self.layer_name}: absorbed weight buffers are missing after restore")
 
+        if self.enable_dsa_cp_with_o_proj_tp:
+            self._init_o_proj_aclnn_input_params()
+
         if self.preprocess_type == PreprocessType.PROLOG_V3:
             self._rebind_persistent_prolog_v3_buffers()
             return
@@ -1195,14 +1198,7 @@ class AscendSFAImpl(MLAAttentionImpl):
             # Communication scratch only: all_gather_into_tensor concatenates on
             # dim0, while unquantized row-parallel o_proj is sharded on dim1.
             self.o_proj_tp_weight_gather_input = self.o_proj_tp_weight.transpose(0, 1).contiguous()
-        self.o_proj_tp_aclnn_input_params = {}
-        self.o_proj_full_aclnn_input_params = {}
-        for param_name in O_PROJ_ACLNN_INPUT_PARAMS:
-            param = getattr(self.o_proj, param_name, None)
-            if param is None:
-                continue
-            self.o_proj_tp_aclnn_input_params[param_name] = param.detach()
-            self.o_proj_full_aclnn_input_params[param_name] = param.repeat(self.tp_size)
+        self._init_o_proj_aclnn_input_params()
 
         self.o_proj_tp_input_sharded_quant_params = {}
         self.o_proj_full_input_sharded_quant_params = {}
@@ -1211,6 +1207,16 @@ class AscendSFAImpl(MLAAttentionImpl):
             self.o_proj_full_input_sharded_quant_params[param_name] = torch.empty(
                 (param.shape[0] * self.tp_size, *param.shape[1:]), dtype=param.dtype, device=param.device
             )
+
+    def _init_o_proj_aclnn_input_params(self) -> None:
+        self.o_proj_tp_aclnn_input_params = {}
+        self.o_proj_full_aclnn_input_params = {}
+        for param_name in O_PROJ_ACLNN_INPUT_PARAMS:
+            param = getattr(self.o_proj, param_name, None)
+            if param is None:
+                continue
+            self.o_proj_tp_aclnn_input_params[param_name] = param.detach()
+            self.o_proj_full_aclnn_input_params[param_name] = param.repeat(self.tp_size)
 
     def _iter_o_proj_input_sharded_quant_params(self):
         if not isinstance(self.o_proj, nn.Module):
