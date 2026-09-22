@@ -374,6 +374,18 @@ class AscendStoreConnector(KVConnectorBase_V1, SupportsHMA):
             per_engine_labelvalues,
         )
 
+    def prepare_for_snapshot_restore(self) -> None:
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.prepare_for_snapshot_restore()
+        if self.connector_worker is not None:
+            self.connector_worker.prepare_for_snapshot_restore()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+        if self.connector_worker is not None:
+            self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+
 
 class LookupKeyServer:
     def __init__(

@@ -52,6 +52,7 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8LinearMethod,
     AscendW8A8MXFP8DynamicLinearMethod,
 )
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,
@@ -418,6 +419,13 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
             )
         self.reorder_batch_threshold = self.decode_threshold
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        for state in self.nope_states.values():
+            state.block_table_buffer.zero_()
+            if state.use_smla:
+                state.metadata_buffer.zero_()
+                state.length_buffer.zero_()
 
     def _prepare_parallel_metadata(
         self,
@@ -837,6 +845,50 @@ class AscendSFAImpl(MLAAttentionImpl):
 
         if self.has_indexer:
             self.indexer.process_weights_after_loading()
+        self._persist_snapshot_derived_tensors()
+
+    def _persist_snapshot_derived_tensors(self) -> None:
+        if self.vllm_config.snapshot_config is None:
+            return
+        for name in (
+            "W_UV",
+            "W_UK_T",
+            "weight_dq",
+            "weight_dkv_kr",
+            "weight_uq_qr",
+            "dequant_scale_w_uq_qr",
+            "dequant_scale_w_dq",
+            "dequant_scale_w_dkv_kr",
+            "weight_dq_scale",
+            "weight_dkv_kr_scale",
+            "weight_uq_qr_scale",
+            "wd_qkv",
+            "deq_scale_qkv",
+            "quant_bias_qkv",
+            "wu_q",
+            "qb_deq_scl",
+            "qb_qt_bias",
+            "ctkv_scale",
+            "q_nope_scale",
+        ):
+            tensor = getattr(self, name, None)
+            if isinstance(tensor, torch.Tensor):
+                set_persistent_tensor(self.q_proj, f"_snapshot_{name}", tensor)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        if self.topk_indices_buffer is not None:
+            self.topk_indices_buffer.fill_(-1)
+        if self.preprocess_type is PreprocessType.PROLOG_V3 and self.enable_sparse_sfa_c8:
+            self.sfa_qsfa_k_nope_clip_alpha = torch.ones(
+                1,
+                dtype=torch.float32,
+                device=self.weight_dq.device,
+            )
+            self.sfa_qsfa_kr_cache_dummy = torch.empty(
+                0,
+                dtype=torch.bfloat16,
+                device=self.weight_dq.device,
+            )
 
     @staticmethod
     def _get_layer_quant_method(layer: torch.nn.Module | None):

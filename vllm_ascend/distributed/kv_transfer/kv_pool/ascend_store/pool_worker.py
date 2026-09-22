@@ -568,6 +568,13 @@ class KVPoolWorker:
             [global_to_local[layer] for layer in independent_layers],
         )
 
+    def prepare_for_snapshot_restore(self) -> None:
+        self.m_store.prepare_for_snapshot_restore()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        self.m_store.reset_after_snapshot(local_ip)
+        self._allocated_gvas.clear()
+
     def _build_group_layer_builders(self) -> list[LayerBatchBuilder]:
         builders = []
         # Sync layerwise_key_layers with the (possibly updated) num_layers.

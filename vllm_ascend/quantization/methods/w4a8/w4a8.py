@@ -30,6 +30,7 @@ from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.ops.fused_moe.dataclass.fused_experts import MoEWeights, build_fused_experts_input
 from vllm_ascend.ops.fused_moe.dataclass.moe_mlp import MoEMlpComputeInput
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts  # noqa: F401
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_lists
 from vllm_ascend.utils import (
     ASCEND_QUANTIZATION_METHOD,
     COMPRESSED_TENSORS_METHOD,
@@ -320,6 +321,8 @@ class AscendW4A8DynamicFusedMoEMethod(AscendMoEScheme):
                     expert_list = [expert.to(torch.float32) for expert in expert_list]
                 setattr(layer, f"{tensor_name}_list", expert_list)
                 delattr(layer, tensor_name)
+            if get_current_vllm_config().snapshot_config is not None:
+                persist_tensor_lists(layer, tuple(f"{name}_list" for name in tensor_names))
         elif use_mega_moe:
             layer.cann_mega_moe_w13_weight_list = [weight.clone() for weight in layer.w13_weight.data.unbind(dim=0)]
             layer.cann_mega_moe_w2_weight_list = [weight.clone() for weight in layer.w2_weight.data.unbind(dim=0)]
@@ -334,6 +337,18 @@ class AscendW4A8DynamicFusedMoEMethod(AscendMoEScheme):
             layer.cann_mega_moe_w2_scale_bias_list = [
                 t.reshape(-1).to(torch.float32) for t in layer.w2_scale_bias.data.unbind(dim=0)
             ]
+            if get_current_vllm_config().snapshot_config is not None:
+                persist_tensor_lists(
+                    layer,
+                    (
+                        "cann_mega_moe_w13_weight_list",
+                        "cann_mega_moe_w2_weight_list",
+                        "cann_mega_moe_w13_weight_scale_list",
+                        "cann_mega_moe_w2_weight_scale_list",
+                        "cann_mega_moe_w13_scale_bias_list",
+                        "cann_mega_moe_w2_scale_bias_list",
+                    ),
+                )
             for tensor_name in tensor_names:
                 delattr(layer, tensor_name)
         else:

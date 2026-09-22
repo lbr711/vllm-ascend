@@ -42,6 +42,7 @@ from vllm_ascend.ops.fused_moe.force_eplb import get_force_eplb_topk
 from vllm_ascend.ops.fused_moe.moe_comm_method import AllGatherCommImpl, FusedExpertsResult
 from vllm_ascend.ops.fused_moe.moe_utils import get_moe_num_logical_experts
 from vllm_ascend.quantization.quant_type import QuantType
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes, persist_tensor_lists
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, maybe_trans_nz
 
 
@@ -130,6 +131,8 @@ class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
                 else:
                     layer.w13_weight_list = [weight.clone() for weight in layer.w13_weight.data.unbind(dim=0)]
                     layer.w2_weight_list = [weight.clone() for weight in layer.w2_weight.data.unbind(dim=0)]
+                    if get_current_vllm_config().snapshot_config is not None:
+                        persist_tensor_lists(layer, ("w13_weight_list", "w2_weight_list"))
                     del layer.w13_weight
                     del layer.w2_weight
                     torch.npu.empty_cache()
@@ -396,6 +399,16 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
             if vllm_config.model_config.runner_type == "draft":
                 draft_model_config = vllm_config.speculative_config.draft_model_config
                 draft_model_config.draft_moe_quant_type = self.quant_type
+
+    def update_expert_map_info(self):
+        super().update_expert_map_info()
+        if get_current_vllm_config().snapshot_config is not None:
+            # MRV2 consumes the upstream device maps, rather than the V1 CPU
+            # ascend_expert_map. Keep the manager and layer aliases intact.
+            names = ["_expert_map", "expert_mask"]
+            if self.expert_map_manager.routing_tables is not None:
+                names.extend(("expert_global_to_physical", "expert_physical_to_global", "expert_local_to_global"))
+            persist_tensor_attributes(self, names)
 
     def get_expert_weights(self) -> Iterable[torch.Tensor]:
         try:

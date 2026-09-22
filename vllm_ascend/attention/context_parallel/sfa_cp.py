@@ -95,6 +95,10 @@ class AscendSFAPCPImpl(OProjWeightSwitchMixin, AscendSFAImpl):
             self._enable_o_proj_full_weight_switch()
         return result
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(get_pcp_group(), shard_axis="input")
+        super().reset_runtime_state_after_snapshot_restore()
+
     def _get_parallel_forward_context(
         self,
         attn_metadata: M,
@@ -394,6 +398,10 @@ class AscendSFADSACPImpl(OProjWeightSwitchMixin, AscendSFAImpl):
         if self.enable_dsa_cp_full_o_proj:
             self._enable_o_proj_full_weight_switch()
         return result
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(get_tp_group())
+        super().reset_runtime_state_after_snapshot_restore()
 
     def _get_fused_type_unsupported_reasons(self, pp_type):
         reasons = super()._get_fused_type_unsupported_reasons(pp_type)
@@ -705,6 +713,14 @@ class AscendSFADCPMetadataBuilder(
             (max_num_input_tokens,),
             dtype=torch.int32,
             device=device,
+        )
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        self.arange_buffer = torch.arange(
+            self.arange_buffer.numel(),
+            dtype=torch.int32,
+            device=self.device,
         )
 
     def _get_dcp_local_seq_lens(self, seq_lens: torch.Tensor) -> torch.Tensor:
@@ -1085,9 +1101,15 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
                 break
         if self._dcp_index_topk <= 0:
             raise RuntimeError("index_topk must be set in the model config for DCP SFA.")
-        device = self.q_proj.weight.device
+        self._initialize_sparse_index_remap(self.q_proj.weight.device)
+
+    def _initialize_sparse_index_remap(self, device: torch.device) -> None:
         self._remap_order = torch.arange(self._dcp_index_topk, dtype=torch.float32, device=device)
         self._remap_invalid_index = torch.tensor(-1.0, dtype=torch.float32, device=device)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        self._initialize_sparse_index_remap(self._remap_order.device)
 
     @staticmethod
     def _has_prefill(attn_metadata: M) -> bool:
