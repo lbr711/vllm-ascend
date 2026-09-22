@@ -155,6 +155,11 @@ def _rebuild_parallel_groups(worker) -> None:
     if not resume_ports:
         raise RuntimeError("Snapshot world-group resume port is not configured")
     worker.distributed_init_method = get_distributed_init_method(master_ip, resume_ports[-1])
+    logger.info(
+        "[snapshot][port] rebuilding worker global distributed group: master=%s:%d",
+        master_ip,
+        resume_ports[-1],
+    )
 
     with set_current_vllm_config(worker.vllm_config):
         worker._init_worker_distributed_environment()
