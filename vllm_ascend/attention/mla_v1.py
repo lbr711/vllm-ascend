@@ -54,6 +54,7 @@ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.attention_fence im
 from vllm_ascend.ops.rotary_embedding import get_cos_and_sin_mla
 from vllm_ascend.quantization.methods import AscendW8A8LinearMethod, AscendW8A8MXFP8DynamicLinearMethod
 from vllm_ascend.quantization.utils import enable_fa_quant
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,
@@ -317,6 +318,25 @@ class AscendMLAMetadataBuilder(MLACommonMetadataBuilder[AscendMLAMetadata]):
         self.query_lens: torch.Tensor = None
         self.seq_lens: torch.Tensor = None
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.chunk_seq_lens = None
+        self.cu_seq_lens_cpu = None
+        self.num_chunks = None
+        self.max_context_chunk = 0
+        self.num_decodes = 0
+        self.num_prefills = 0
+        self.num_decode_tokens = 0
+        self.num_prefill_tokens = 0
+        self.context_lens_cpu = None
+        self.num_actual_tokens = None
+        self.block_table = None
+        self.slot_mapping = None
+        self.graph_pad_size = 0
+        self.query_lens = None
+        self.seq_lens = None
+        if self.nope_zero_rope_cache is not None:
+            self.nope_zero_rope_cache.clear()
 
     @staticmethod
     def determine_chunked_prefill_workspace_size(vllm_config: VllmConfig) -> int:
@@ -1098,6 +1118,26 @@ class AscendMLAImpl(MLAAttentionImpl):
         else:
             # if mlapo, W_UK_T can't trans nz
             self.W_UK_T = maybe_trans_nz(self.W_UK_T)
+        self._persist_snapshot_derived_tensors()
+
+    def _persist_snapshot_derived_tensors(self) -> None:
+        if self.vllm_config.snapshot_config is None:
+            return
+        host = self.q_proj
+        for name in (
+            "W_UV",
+            "W_UK_T",
+            "mlapo_W_UK_T",
+            "weight_dq",
+            "weight_dkv_kr",
+            "weight_uq_qr",
+            "dequant_scale_w_uq_qr",
+            "dequant_scale_w_dq",
+            "dequant_scale_w_dkv_kr",
+        ):
+            tensor = getattr(self, name, None)
+            if isinstance(tensor, torch.Tensor):
+                set_persistent_tensor(host, f"_snapshot_{name}", tensor)
 
     def _load_fa_quant_scales(self):
         layer = self.vllm_config.compilation_config.static_forward_context[self.layer_name]

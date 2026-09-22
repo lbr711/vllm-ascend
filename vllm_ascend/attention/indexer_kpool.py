@@ -360,6 +360,13 @@ class Glm5NextKPoolIndexerBackend(nn.Module):
         self._norm_weight_f32 = self.k_norm.weight.detach().float() if self.k_norm.weight is not None else None
         self._norm_bias_f32 = self.k_norm.bias.detach().float() if self.k_norm.bias is not None else None
 
+    def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
+        self.process_weights_after_loading()
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        if self.topk_indices_buffer is not None:
+            self.topk_indices_buffer.fill_(-1)
+
     @staticmethod
     def _bound_cache(layer: Any) -> torch.Tensor:
         context = get_forward_context()

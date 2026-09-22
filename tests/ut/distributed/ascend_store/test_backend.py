@@ -376,10 +376,42 @@ class TestMooncakeBackendSetup(unittest.TestCase):
         backend.parallel_config = MagicMock()
         backend.config = config
         backend.local_seg = None
+        backend._local_hostname = "10.0.0.7"
         backend._use_fabric_mem = use_fabric_mem
         backend._use_store_independent_te = False
         backend._contribute_memory = contribute_memory
         return backend
+
+    def test_snapshot_restore_rebuilds_shared_and_independent_stores(self):
+        for independent in (False, True):
+            with self.subTest(independent=independent):
+                backend = self._make_backend(config=_make_mooncake_store_config(), use_fabric_mem=False)
+                backend._use_store_independent_te = independent
+                backend._store_initialized = True
+                backend._store_was_initialized = None
+                backend._lazy_init = False
+                backend._registered_buffers = ([4096], [8192])
+                backend.store = MagicMock()
+                new_store = MagicMock()
+                new_store.register_buffer.return_value = 0
+                backend._setup_store = MagicMock(return_value=new_store)
+                with (
+                    patch(f"{self._MODULE_PATH}.global_te") as te,
+                    patch.object(MooncakeStoreConfig, "load_from_env", return_value=backend.config),
+                ):
+                    te.hostname = "10.0.0.7"
+                    backend.prepare_for_snapshot_restore()
+                    backend.reset_after_snapshot("10.0.0.8")
+                    self.assertIs(backend.store, new_store)
+                    self.assertTrue(backend._store_initialized)
+                    self.assertIsNone(backend._store_was_initialized)
+                    self.assertEqual(backend._local_hostname, "10.0.0.8")
+                    if independent:
+                        te.reset.assert_not_called()
+                        new_store.register_buffer.assert_called_once_with(4096, 8192)
+                    else:
+                        te.reset.assert_called_once()
+                        te.register_buffer.assert_called_once_with([4096], [8192])
 
     def _setup_store(self, backend: MooncakeBackend, store: MagicMock):
         transfer_engine = MagicMock()
@@ -509,6 +541,7 @@ class TestMooncakeBackendMethods(unittest.TestCase):
             backend._use_store_independent_te = False
             backend._store_init_lock = MagicMock()
             backend.local_seg = None
+            backend._local_hostname = "127.0.0.1"
             return backend
 
     def test_exists(self):

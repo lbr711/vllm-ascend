@@ -4,6 +4,7 @@ from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_pa
 from vllm.logger import logger
 
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes
 
 from ..base import AscendAttentionScheme
 from ..registry import register_scheme
@@ -70,6 +71,8 @@ class AscendFAQuantAttentionMethod:
         repeated_quant_kscale = fa_k_scale.repeat(self.kv_lora_rank)
         layer.quant_kscale = repeated_quant_kscale.view(1, self.kv_lora_rank)
         layer.quant_kscale = 1.0 / torch.nn.Parameter(layer.quant_kscale.to(torch.float), requires_grad=False)
+        if get_current_vllm_config().snapshot_config is not None:
+            persist_tensor_attributes(layer, ("fak_descale_reciprocal", "quant_kscale"))
 
 
 @register_scheme("INT8_DYNAMIC", "attention")

@@ -94,6 +94,7 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
 from vllm_ascend.distributed.parallel_state import init_ascend_model_parallel
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 from vllm_ascend.profiler.torch_npu_profiler import TorchNPUProfilerWrapper
+from vllm_ascend.snapshot.worker_lifecycle import resume_worker, suspend_worker, unlock_worker
 from vllm_ascend.utils import (
     check_ascend_device_type,
     enable_sp,
@@ -115,6 +116,8 @@ torch._dynamo.trace_rules.torch_name_rule_map.append(torch_non_c_binding_in_grap
 
 
 class NPUWorker(WorkerBase):
+    distributed_init_method: str
+
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -158,6 +161,13 @@ class NPUWorker(WorkerBase):
             distributed_init_method=distributed_init_method,
             is_driver_worker=is_driver_worker,
         )
+
+        if vllm_config.snapshot_config is not None:
+            # Worker and EngineCore receive separate config copies. Reserve the
+            # remaining port for rebuilding the worker process groups.
+            ports = self.parallel_config._snapshot_data_parallel_port_list
+            assert ports is not None and len(ports) == 2
+            ports.pop()
 
         if self.cache_config.cache_dtype == "auto":
             self.cache_dtype = self.model_config.dtype
@@ -820,6 +830,21 @@ class NPUWorker(WorkerBase):
             output,
         )
         return output
+
+    def suspend(self, model_save_path: str | None = None) -> None:
+        suspend_worker(self, model_save_path)
+
+    def device_unlock(self) -> None:
+        unlock_worker(self)
+
+    def resume(
+        self,
+        local_ip: str,
+        data_parallel_master_ip: str,
+        model_path: str | None = None,
+        new_engine_id: str | None = None,
+    ) -> None:
+        resume_worker(self, local_ip, data_parallel_master_ip, model_path, new_engine_id)
 
     def load_model(self) -> None:
         if self.vllm_config.model_config.enable_sleep_mode:

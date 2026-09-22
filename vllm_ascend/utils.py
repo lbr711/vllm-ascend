@@ -93,6 +93,13 @@ _CUSTOM_OP_BASE_DIR = (
 )
 _IS_ROT_WEIGHT_USED = None
 
+RESTORE_FLAG_PATH = "/root/.grusflag"
+
+
+def is_restore() -> bool:
+    """Return True when the process is running after a container snapshot restore."""
+    return os.path.exists(RESTORE_FLAG_PATH)
+
 
 def kv_transfer_supports_shared_backing(kv_transfer_config: Any | None) -> bool:
     """Whether a KV connector can consume standardized shared backing."""

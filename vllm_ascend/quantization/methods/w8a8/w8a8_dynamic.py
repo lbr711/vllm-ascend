@@ -35,6 +35,10 @@ from vllm_ascend.ops.fused_moe.moe_utils import (
     cumsum_group_list,
 )
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts  # noqa: F401
+from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
+    persist_tensor_attributes,
+    persist_tensor_lists,
+)
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, dispose_tensor, maybe_trans_nz
 
 from ..base import (
@@ -122,6 +126,8 @@ class AscendW8A8DynamicLinearMethod(AscendLinearScheme):
             layer.weight.data = maybe_trans_nz(layer.weight.data)
         layer.weight_scale.data = layer.weight_scale.data.flatten()
         layer.weight_scale_fp32 = layer.weight_scale.data.to(torch.float32)
+        if get_current_vllm_config().snapshot_config is not None:
+            persist_tensor_attributes(layer, ("weight_scale_fp32",))
         layer.weight_offset.data = layer.weight_offset.data.flatten()
 
 
@@ -268,6 +274,7 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
             layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight.data, ACL_FORMAT_FRACTAL_NZ)
         layer.w13_weight_scale.data = layer.w13_weight_scale.data.view(layer.w13_weight_scale.data.shape[0], -1)
         layer.w13_weight_scale_fp32 = layer.w13_weight_scale.data.to(torch.float32)
+        persistent_tensor_names = ["w13_weight_scale_fp32"]
         layer.w13_weight_offset.data = layer.w13_weight_offset.data.view(layer.w13_weight_offset.data.shape[0], -1)
         layer.w2_weight_scale.data = layer.w2_weight_scale.data.view(layer.w2_weight_scale.data.shape[0], -1)
         layer.w2_weight_offset.data = layer.w2_weight_offset.data.view(layer.w2_weight_offset.data.shape[0], -1)
@@ -277,6 +284,11 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
             layer.fused_w2_scale = scale_from_float_to_int64(layer.w2_weight_scale.data)
             layer.fused_w1_scale_bias = [torch.tensor([], dtype=torch.float32)]
             layer.fused_w2_scale_bias = [torch.tensor([], dtype=torch.float32)]
+            persistent_tensor_names.extend(("fused_w1_scale", "fused_w2_scale"))
+
+        snapshot_enabled = get_current_vllm_config().snapshot_config is not None
+        if snapshot_enabled and not self.use_expert_weight_list:
+            persist_tensor_attributes(layer, persistent_tensor_names)
 
         if self.use_expert_weight_list:
             layer.w13_weight_list = [weight.clone() for weight in layer.w13_weight.data.unbind(dim=0)]
@@ -294,6 +306,16 @@ class AscendW8A8DynamicFusedMoEMethod(AscendMoEScheme):
                     weight.clone()
                     for weight in layer.fused_w2_scale.view(len(layer.w2_weight_list), -1).data.unbind(dim=0)
                 ]
+            if snapshot_enabled:
+                persistent_list_names = [
+                    "w13_weight_list",
+                    "w2_weight_list",
+                    "w13_weight_scale_fp32_list",
+                    "w2_weight_scale_list",
+                ]
+                if get_ascend_config().enable_fused_mc2 == 1:
+                    persistent_list_names.extend(("fused_w1_scale_list", "fused_w2_scale_list"))
+                persist_tensor_lists(layer, persistent_list_names)
             del layer.w13_weight
             del layer.w2_weight
             del layer.w13_weight_scale
