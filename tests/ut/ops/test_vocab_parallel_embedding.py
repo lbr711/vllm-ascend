@@ -17,6 +17,7 @@ import unittest
 from unittest import mock
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 from vllm.config.vllm import set_current_vllm_config
 
@@ -28,6 +29,23 @@ from vllm_ascend.ops.vocab_parallel_embedding import (
 )
 
 VOCAB_PARALLEL_EMBEDDING_TEST_NUM_RANDOM_SEEDS = 128
+
+
+@pytest.mark.parametrize("forward_type", [None, "embed_tp"])
+def test_snapshot_refreshes_embedding_collective_group(forward_type):
+    layer = AscendVocabParallelEmbedding.__new__(AscendVocabParallelEmbedding)
+    torch.nn.Module.__init__(layer)
+    layer.forward_type = forward_type
+    old_group = object()
+    layer.comm_group = old_group
+    with patch("vllm_ascend.ops.vocab_parallel_embedding.get_embed_tp_group") as get_group:
+        layer.reset_runtime_state_after_snapshot_restore()
+        if forward_type == "embed_tp":
+            assert layer.comm_group is get_group.return_value
+            get_group.assert_called_once_with()
+        else:
+            assert layer.comm_group is old_group
+            get_group.assert_not_called()
 
 
 class TestCustomVocabParallelEmbedding(unittest.TestCase):

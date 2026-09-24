@@ -315,3 +315,19 @@ def test_reset_block_tables_clears_cpu_and_device_buffers():
     for buf in buffers:
         assert torch.count_nonzero(buf.gpu) == 0
         assert torch.count_nonzero(buf.cpu) == 0
+
+
+@pytest.mark.parametrize("zeroer_attr", [None, "kv_block_zeroer", "_kv_block_zeroer"])
+def test_restore_rebuilds_only_initialized_kv_zeroing_metadata(zeroer_attr):
+    runner = _make_runner(torch.nn.Module(), None)
+    runner.vllm_config.use_v2_model_runner = True
+    runner._init_kv_zero_meta = MagicMock()
+    if zeroer_attr is not None:
+        setattr(runner, zeroer_attr, object())
+    with (
+        patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state"),
+        patch("vllm_ascend.snapshot.model_runtime.runner_v2.reset_runner_runtime_state"),
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_target_and_drafter_modules_after_restore"),
+    ):
+        _restore_model_runner_runtime_state(runner, runner.get_model())
+    assert runner._init_kv_zero_meta.call_count == (zeroer_attr is not None)

@@ -187,6 +187,11 @@ class AscendVocabParallelEmbedding(VocabParallelEmbedding):
         input_ = vocab_mask * (input_ - valid_offset)
         return input_, ~vocab_mask
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        if self.forward_type == "embed_tp":
+            # This path retains the group used by its all-gather/reduce-scatter.
+            self.comm_group = get_embed_tp_group()
+
     def forward(self, input_):
         if self.forward_type == "embed_tp":
             return self._forward_embed_tp(input_)

@@ -136,7 +136,6 @@ def test_v2_mtp_resets_step_indices_and_draft_inputs():
         "hidden_states",
         "current_draft_step",
         "last_token_indices",
-        "sample_src_positions",
     ):
         setattr(speculator, name, torch.ones(4))
     speculator.draft_logits = None

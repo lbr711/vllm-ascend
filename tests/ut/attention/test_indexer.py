@@ -65,6 +65,19 @@ def _make_builder(
         )
 
 
+@pytest.mark.parametrize("dcp_size", [1, 2])
+def test_snapshot_restore_rebuilds_dcp_column_indices(dcp_size):
+    builder = _make_builder(dcp_size=dcp_size)
+    if builder.use_dcp:
+        indices = builder.replicated_col_idx_buf
+        indices.fill_(-1)
+    builder.reset_runtime_state_after_snapshot_restore()
+    builder.reset_runtime_state_after_snapshot_restore()
+    if builder.use_dcp:
+        assert builder.replicated_col_idx_buf is indices
+        torch.testing.assert_close(indices, torch.arange(indices.numel(), dtype=torch.int32))
+
+
 def _make_common_metadata() -> SimpleNamespace:
     metadata = SimpleNamespace(
         num_reqs=2,

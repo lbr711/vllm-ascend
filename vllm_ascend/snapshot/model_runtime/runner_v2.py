@@ -72,7 +72,6 @@ def _reset_speculator(speculator) -> None:
         speculator.input_buffers.seq_lens_cpu.zero_()
         speculator.current_draft_step.zero_()
         speculator.last_token_indices.zero_()
-        speculator.sample_src_positions.zero_()
         if speculator.inputs_embeds is not None:
             speculator.inputs_embeds.zero_()
     if isinstance(speculator, DFlashSpeculator):

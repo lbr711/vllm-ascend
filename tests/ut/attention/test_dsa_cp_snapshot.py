@@ -1,17 +1,29 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 
 from vllm_ascend.attention.context_parallel.dsa_cp import (
     AscendDSACPImpl,
     AscendDSACPMetadataBuilder,
+    AscendDSAPCPMetadataBuilder,
 )
 from vllm_ascend.attention.context_parallel.sfa_cp import (
     AscendSFADSACPImpl,
     AscendSFAPCPImpl,
 )
 from vllm_ascend.attention.sfa_v1 import AscendSFAImpl
+
+
+def test_pcp_reset_includes_nested_global_metadata_builder():
+    builder = AscendDSAPCPMetadataBuilder.__new__(AscendDSAPCPMetadataBuilder)
+    builder._global_metadata_builder = Mock()
+    with patch(
+        "vllm_ascend.attention.dsa_v1.AscendDSAMetadataBuilder.reset_runtime_state_after_snapshot_restore"
+    ) as reset_local:
+        builder.reset_runtime_state_after_snapshot_restore()
+    reset_local.assert_called_once_with()
+    builder._global_metadata_builder.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
 
 
 def test_metadata_builder_reset_restores_cold_start_state():
@@ -86,6 +98,7 @@ def test_metadata_builder_reset_restores_cold_start_state():
 
 def test_dsa_cp_impl_refreshes_tp_group_after_restore():
     impl = AscendDSACPImpl.__new__(AscendDSACPImpl)
+    impl._o_proj_weight_switch_enabled = False
     group = SimpleNamespace(world_size=8, rank_in_group=3)
 
     with patch(
@@ -103,6 +116,8 @@ def test_dsa_cp_impl_refreshes_tp_group_after_restore():
 def test_sfa_cp_impls_refresh_weight_switch_group_after_restore():
     pcp_impl = AscendSFAPCPImpl.__new__(AscendSFAPCPImpl)
     dsa_cp_impl = AscendSFADSACPImpl.__new__(AscendSFADSACPImpl)
+    pcp_impl._o_proj_weight_switch_enabled = False
+    dsa_cp_impl._o_proj_weight_switch_enabled = False
     pcp_group = SimpleNamespace(world_size=2, rank_in_group=1)
     tp_group = SimpleNamespace(world_size=8, rank_in_group=3)
 

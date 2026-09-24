@@ -19,6 +19,35 @@ def _weight_switch_config() -> WeightSwitchConfig:
     return WeightSwitchConfig(group=object(), world_size=2, rank=0)
 
 
+@pytest.mark.parametrize("output_sharded", [False, True])
+def test_snapshot_restore_refreshes_weight_switch_derived_inputs(output_sharded):
+    from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_weight_switch_state
+
+    layer = _output_sharded_layer() if output_sharded else _input_sharded_layer()
+    method = _TestLinearMethod()
+    config = _weight_switch_config()
+    state = method.enable_weight_switch(layer, config)
+    # H2D restores the local parameters, but not standalone transpose/repeat buffers.
+    for part in state.gather_parts.values():
+        dim = part.spec.gather_dim % part.local_tensor.dim()
+        if dim != 0:
+            part.gather_input.zero_()
+        part.gather_output.fill_(-7)
+    for part in state.repeat_parts.values():
+        part.full_tensor.zero_()
+    state.handles.append(object())
+
+    restore_weight_switch_state(state, config)
+    restore_weight_switch_state(state, config)
+
+    assert not state.handles
+    for part in state.gather_parts.values():
+        torch.testing.assert_close(part.gather_input, torch.movedim(part.local_tensor, part.spec.gather_dim, 0))
+        assert torch.all(part.gather_output == -7)  # The next all-gather supplies it.
+    for part in state.repeat_parts.values():
+        torch.testing.assert_close(part.full_tensor, part.local_tensor.repeat(config.world_size))
+
+
 def test_weight_switch_config_uses_the_caller_selected_parallel_group() -> None:
     group = SimpleNamespace(world_size=4, rank_in_group=2)
 

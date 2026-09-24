@@ -47,3 +47,16 @@ def restore_global_tensor_state(
         AscendSFAIndexerBackend.q_hadamard = hadamard
         AscendSFAIndexerBackend.k_hadamard = hadamard.clone()
     reload_cos_and_sin_after_restore(model)
+
+
+def restore_weight_switch_state(state, config) -> None:
+    """Refresh derived full-weight inputs from restored local parameters."""
+    state.handles.clear()
+    for part in state.gather_parts.values():
+        dim = part.spec.gather_dim % part.local_tensor.dim()
+        if dim != 0:
+            part.gather_input.copy_(torch.movedim(part.local_tensor, dim, 0))
+    for part in state.repeat_parts.values():
+        repeats = [1] * part.local_tensor.dim()
+        repeats[part.spec.repeat_dim] = config.world_size
+        part.full_tensor.copy_(part.local_tensor.repeat(*repeats))

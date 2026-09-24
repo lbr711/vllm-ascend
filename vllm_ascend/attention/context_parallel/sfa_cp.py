@@ -97,6 +97,10 @@ class AscendSFAPCPImpl(OProjWeightSwitchMixin, AscendSFAImpl):
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(get_pcp_group(), shard_axis="input")
+        if self._o_proj_weight_switch_enabled:
+            from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_weight_switch_state
+
+            restore_weight_switch_state(self._get_o_proj_weight_switch_state(), self.o_proj_weight_switch_config)
         super().reset_runtime_state_after_snapshot_restore()
 
     def _get_parallel_forward_context(
@@ -401,6 +405,10 @@ class AscendSFADSACPImpl(OProjWeightSwitchMixin, AscendSFAImpl):
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(get_tp_group())
+        if self._o_proj_weight_switch_enabled:
+            from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_weight_switch_state
+
+            restore_weight_switch_state(self._get_o_proj_weight_switch_state(), self.o_proj_weight_switch_config)
         super().reset_runtime_state_after_snapshot_restore()
 
     def _get_fused_type_unsupported_reasons(self, pp_type):
@@ -721,6 +729,15 @@ class AscendSFADCPMetadataBuilder(
             self.arange_buffer.numel(),
             dtype=torch.int32,
             device=self.device,
+        )
+        dcp_group = get_dcp_group()
+        collective_ranks = sorted(dcp_group.ranks)
+        self.dcp_collective_rank_order.copy_(
+            torch.tensor(
+                [collective_ranks.index(rank) for rank in dcp_group.ranks],
+                dtype=torch.int32,
+                device=self.device,
+            )
         )
 
     def _get_dcp_local_seq_lens(self, seq_lens: torch.Tensor) -> torch.Tensor:

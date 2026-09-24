@@ -9,9 +9,12 @@ from vllm_ascend.utils import ASCEND_QUANTIZATION_METHOD, COMPRESSED_TENSORS_MET
 
 
 class TestAscendW8A8LinearMethod(TestBase):
-    @patch("vllm_ascend.quantization.methods.w8a8.w8a8_static.get_current_vllm_config")
-    def setUp(self, get_current_vllm_config):
+    def setUp(self):
+        config_patch = patch("vllm_ascend.quantization.methods.w8a8.w8a8_static.get_current_vllm_config")
+        get_current_vllm_config = config_patch.start()
+        self.addCleanup(config_patch.stop)
         mock_vllm_config = Mock()
+        mock_vllm_config.snapshot_config = None
         mock_vllm_config.quant_config = Mock()
         mock_vllm_config.quant_config.get_name.return_value = ASCEND_QUANTIZATION_METHOD
         get_current_vllm_config.return_value = mock_vllm_config

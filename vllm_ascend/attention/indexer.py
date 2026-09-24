@@ -572,6 +572,15 @@ class AscendSFAIndexerMetadataBuilder(AttentionMetadataBuilder[AscendSFAIndexerM
                 max_num_input_tokens * vllm_config.parallel_config.prefill_context_parallel_size
             )
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        # DCP consumes these fixed column indices without rewriting them.
+        # The per-request metadata buffers are populated by build().
+        if self.use_dcp:
+            torch.arange(
+                self.replicated_col_idx_buf.numel(),
+                out=self.replicated_col_idx_buf,
+            )
+
     @classmethod
     def get_cudagraph_support(
         cls,

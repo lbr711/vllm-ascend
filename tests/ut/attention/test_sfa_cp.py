@@ -785,12 +785,20 @@ def test_sfa_dcp_builder_sizes_replicated_view_from_padded_block_table() -> None
 def test_sfa_dcp_builder_rebuilds_replicated_view_indices_after_restore() -> None:
     builder = _make_builder()
     builder.arange_buffer.zero_()
+    builder.dcp_collective_rank_order = torch.zeros(4, dtype=torch.int32)
 
-    with patch.object(AscendSFAMetadataBuilder, "reset_runtime_state_after_snapshot_restore") as reset_base:
+    with (
+        patch.object(AscendSFAMetadataBuilder, "reset_runtime_state_after_snapshot_restore") as reset_base,
+        patch(
+            "vllm_ascend.attention.context_parallel.sfa_cp.get_dcp_group",
+            return_value=SimpleNamespace(ranks=[0, 2, 1, 3]),
+        ),
+    ):
         builder.reset_runtime_state_after_snapshot_restore()
 
     reset_base.assert_called_once_with()
     torch.testing.assert_close(builder.arange_buffer, torch.arange(8, dtype=torch.int32))
+    torch.testing.assert_close(builder.dcp_collective_rank_order, torch.tensor([0, 2, 1, 3], dtype=torch.int32))
 
 
 def _make_builder(rank: int = 0) -> AscendSFADCPMetadataBuilder:

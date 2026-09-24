@@ -94,6 +94,10 @@ def _restore_model_runner_runtime_state(runner, model: nn.Module) -> None:
     metadata, runner input buffers, model-module runtime state, and block tables.
     """
     restore_global_tensor_state(model, runner.model_config.hf_config, runner.device)
+    # KV zeroing keeps device-side address/stride tables outside the model.
+    # Only runners that enabled it at cold start own one of these objects.
+    if getattr(runner, "kv_block_zeroer", None) is not None or getattr(runner, "_kv_block_zeroer", None) is not None:
+        runner._init_kv_zero_meta()
     if runner.vllm_config.use_v2_model_runner:
         from vllm_ascend.snapshot.model_runtime.runner_v2 import reset_runner_runtime_state
 
@@ -218,8 +222,7 @@ def _reset_runner_input_runtime_state(runner) -> None:
 def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     """Reset reusable runtime state owned by target and drafter modules.
 
-    Modules refresh their own state and forward the hook to backend
-    implementations they own.
+    The dispatcher visits modules and their backend implementations once.
     """
     reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
 

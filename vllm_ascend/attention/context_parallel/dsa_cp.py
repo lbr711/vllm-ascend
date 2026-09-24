@@ -1481,6 +1481,11 @@ class AscendDSACPImpl(AttentionImplBase[Any]):
         self.tp_size = self.tp_group.world_size
         self.tp_rank = self.tp_group.rank_in_group
         self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(self.tp_group)
+        if self._o_proj_weight_switch_enabled:
+            from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_weight_switch_state
+
+            for state in (self.wo_a_weight_state, self.wo_b_weight_state):
+                restore_weight_switch_state(state, self.o_proj_weight_switch_config)
 
     def _get_layer_metadata(
         self,
@@ -2227,6 +2232,11 @@ class AscendDSAPCPMetadataBuilder(dsa_v1.AscendDSAMetadataBuilder):
             dtype=torch.int64,
             device=device,
         )
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        # Global cache metadata has its own builder outside runner.attn_groups.
+        self._global_metadata_builder.reset_runtime_state_after_snapshot_restore()
 
     @classmethod
     def get_cudagraph_support(
