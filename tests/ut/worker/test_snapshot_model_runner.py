@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from vllm_ascend.snapshot.model_runner_lifecycle.checkpoint import dump_model_runner
-from vllm_ascend.snapshot.model_runner_lifecycle.module_restore import (
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
 )

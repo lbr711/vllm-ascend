@@ -8,7 +8,7 @@ import torch.nn as nn
 from vllm.distributed.parallel_state import get_tp_group
 
 from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
-from vllm_ascend.snapshot.model_runner_lifecycle.module_restore import (
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
     restore_state_dict,

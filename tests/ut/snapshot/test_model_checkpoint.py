@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from vllm_ascend.snapshot.model_runner_lifecycle.h2d_copy import _W4A8V1NZPackedCopyStrategy
-from vllm_ascend.snapshot.model_runner_lifecycle.module_restore import restore_state_dict
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import restore_state_dict
 
 
 class _Model(torch.nn.Module):
