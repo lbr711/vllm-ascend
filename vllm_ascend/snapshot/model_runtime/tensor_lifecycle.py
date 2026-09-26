@@ -34,16 +34,7 @@ def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) ->
 
 def restore_global_tensor_state(
     model: nn.Module,
-    hf_config: object,
-    device: torch.device,
 ) -> None:
-    from vllm_ascend.attention.indexer import AscendSFAIndexerBackend
     from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
 
-    if AscendSFAIndexerBackend.q_hadamard is not None:
-        import scipy.linalg
-
-        hadamard = torch.tensor(scipy.linalg.hadamard(128), dtype=torch.bfloat16, device=device) / (128**0.5)
-        AscendSFAIndexerBackend.q_hadamard = hadamard
-        AscendSFAIndexerBackend.k_hadamard = hadamard.clone()
     reload_cos_and_sin_after_restore(model)

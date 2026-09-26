@@ -7,12 +7,12 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_ascend.snapshot.model_runtime.restore import get_drafter_model
-from vllm_ascend.snapshot.model_runtime.runner_v2 import (
+from vllm_ascend.snapshot.model_runtime.restore import (
     _reset_block_tables,
     _reset_input_buffers,
     _reset_request_state,
     _reset_speculator,
+    get_drafter_model,
     reset_graph_managers,
 )
 
@@ -86,7 +86,7 @@ def test_v2_request_state_reset_and_idle_contract():
         draft_tokens=torch.ones(4),
         next_prefill_tokens=torch.ones(4),
     )
-    with pytest.raises(RuntimeError, match="empty MRV2 request state"):
+    with pytest.raises(RuntimeError, match="empty Model Runner V2 request state"):
         _reset_request_state(state)
     state.num_reqs = 0
     _reset_request_state(state)

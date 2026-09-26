@@ -9,11 +9,7 @@ from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
     reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runtime.restore import (
-    _rebuild_runner_native_resources,
-    _reset_attention_builders_after_restore,
-    _reset_block_table_runtime_state,
-    _reset_runner_input_runtime_state,
-    _reset_spec_decode_runtime_state,
+    _require_model_runner_v2,
     _reset_target_and_drafter_modules_after_restore,
     _restore_model_runner_runtime_state,
     dump_model_runner,
@@ -56,7 +52,7 @@ class _FailingReloadTarget:
 def _make_runner(model, drafter_model):
     return SimpleNamespace(
         vllm_config=SimpleNamespace(
-            use_v2_model_runner=False,
+            use_v2_model_runner=True,
             parallel_config=SimpleNamespace(tensor_parallel_size=8),
             model_config=SimpleNamespace(model="/models/test-model"),
         ),
@@ -64,8 +60,8 @@ def _make_runner(model, drafter_model):
         dp_size=2,
         dp_rank=1,
         device=torch.device("cpu"),
-        drafter=SimpleNamespace(model=drafter_model),
         get_model=lambda: model,
+        get_draft_model=lambda: drafter_model,
     )
 
 
@@ -111,149 +107,21 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
 
     with (
         patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state") as restore_global,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_spec_decode_runtime_state") as reset_spec,
-        patch("vllm_ascend.snapshot.model_runtime.restore._restore_drafter_runtime_state") as restore_drafter,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_attention_builders_after_restore") as reset_attention,
-        patch("vllm_ascend.snapshot.model_runtime.restore._rebuild_runner_native_resources") as rebuild_native,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_input_runtime_state") as reset_runner,
+        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_runtime_state") as reset_runner,
         patch(
             "vllm_ascend.snapshot.model_runtime.restore._reset_target_and_drafter_modules_after_restore"
         ) as reset_modules,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_block_table_runtime_state") as reset_block_table,
     ):
         _restore_model_runner_runtime_state(runner, model)
 
-    restore_global.assert_called_once_with(model, runner.model_config.hf_config, runner.device)
-    reset_spec.assert_called_once_with(runner)
-    restore_drafter.assert_called_once_with(runner)
-    reset_attention.assert_called_once_with(runner)
-    rebuild_native.assert_called_once_with(runner)
+    restore_global.assert_called_once_with(model)
     reset_runner.assert_called_once_with(runner)
     reset_modules.assert_called_once_with(runner)
-    reset_block_table.assert_called_once_with(runner)
 
 
-def test_reset_spec_decode_runtime_state():
-    runner = SimpleNamespace(
-        _draft_token_req_ids=["request"],
-        _draft_token_ids=torch.ones((1, 1), dtype=torch.int32),
-        _draft_probs=torch.ones((1, 1)),
-        _draft_prob_req_ids=["request"],
-        prev_num_spec_tokens=1,
-        num_spec_tokens=3,
-        input_batch=SimpleNamespace(prev_req_id_to_index={"request": 0}),
-    )
-
-    _reset_spec_decode_runtime_state(runner)
-
-    assert runner._draft_token_req_ids is None
-    assert runner._draft_token_ids is None
-    assert runner._draft_probs is None
-    assert runner._draft_prob_req_ids is None
-    assert runner.prev_num_spec_tokens == 3
-    assert runner.input_batch.prev_req_id_to_index is None
-
-
-def test_reset_runner_input_runtime_state():
-    runner = SimpleNamespace()
-    runner.use_dcp = True
-    runner.dcp_manager = MagicMock()
-    runner.positions = torch.full((4,), 29, dtype=torch.int64)
-    runner._positions_cpu_buf = torch.full((4,), 31, dtype=torch.int64)
-    runner.input_batch = SimpleNamespace(
-        num_computed_tokens_cpu_tensor=torch.full((4,), 37, dtype=torch.int32),
-        num_prompt_tokens_cpu_tensor=torch.full((4,), 41, dtype=torch.int32),
-    )
-    runner.group_len = SimpleNamespace(
-        gpu=torch.full((4,), 3, dtype=torch.int32),
-        cpu=torch.full((4,), 5, dtype=torch.int32),
-    )
-    runner.group_key_idx = SimpleNamespace(
-        gpu=torch.full((4,), 7, dtype=torch.int32),
-        cpu=torch.full((4,), 11, dtype=torch.int32),
-    )
-    runner.group_key_cache_idx = SimpleNamespace(
-        gpu=torch.full((4,), 13, dtype=torch.int32),
-        cpu=torch.full((4,), 17, dtype=torch.int32),
-    )
-
-    _reset_runner_input_runtime_state(runner)
-
-    for staged in (
-        runner.group_len,
-        runner.group_key_idx,
-        runner.group_key_cache_idx,
-    ):
-        assert torch.count_nonzero(staged.gpu) == 0
-        assert torch.count_nonzero(staged.cpu) == 0
-    assert torch.count_nonzero(runner.positions) == 0
-    assert torch.count_nonzero(runner._positions_cpu_buf) == 0
-    assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
-    assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
-    runner.dcp_manager.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
-
-
-def test_rebuild_runner_native_resources():
-    old_device_executor = object()
-    old_prefetch_executor = MagicMock()
-    metadata_provider = MagicMock()
-    runner = SimpleNamespace(
-        device_metadata_executor=old_device_executor,
-        device_metadata_providers={1: metadata_provider},
-        reset_encoder_cache=MagicMock(),
-        _pending_spec_decode_metadata_copies=[object()],
-        kvpp=SimpleNamespace(scheduler=SimpleNamespace(_prefetch_executor=old_prefetch_executor)),
-        vllm_config=object(),
-        kv_cache_config=object(),
-        compilation_config=SimpleNamespace(static_forward_context={}),
-    )
-    new_device_executor = object()
-    new_kvpp = object()
-
-    with (
-        patch(
-            "vllm_ascend.worker.device_metadata.DeviceMetadataExecutor",
-            return_value=new_device_executor,
-        ),
-        patch(
-            "vllm_ascend.worker.v2.kvpp.KVPPRuntime.create_from_kv_cache",
-            return_value=new_kvpp,
-        ) as create_kvpp,
-    ):
-        _rebuild_runner_native_resources(runner)
-
-    assert runner.device_metadata_executor is new_device_executor
-    metadata_provider.enable_device_metadata.assert_called_once_with()
-    runner.reset_encoder_cache.assert_called_once_with()
-    assert runner._pending_spec_decode_metadata_copies == []
-    old_prefetch_executor.shutdown.assert_called_once_with(wait=True)
-    create_kvpp.assert_called_once_with(
-        vllm_config=runner.vllm_config,
-        kv_cache_config=runner.kv_cache_config,
-        static_forward_context=runner.compilation_config.static_forward_context,
-    )
-    assert runner.kvpp is new_kvpp
-
-
-def test_reset_attention_builders_includes_drafter_groups():
-    target_builder = MagicMock()
-    draft_builder = MagicMock()
-    target_group = SimpleNamespace(metadata_builders=[target_builder])
-    draft_group = SimpleNamespace(metadata_builders=[draft_builder])
-
-    class _Drafter:
-        draft_attn_groups = [draft_group]
-
-    runner = SimpleNamespace(
-        attn_groups=[[target_group]],
-        drafter=_Drafter(),
-    )
-
-    with patch("vllm_ascend.snapshot.model_runtime.restore.AscendEagleProposer", _Drafter):
-        _reset_attention_builders_after_restore(runner)
-
-    target_builder.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
-    draft_builder.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
+def test_snapshot_rejects_model_runner_v1():
+    with pytest.raises(RuntimeError, match="requires Model Runner V2"):
+        _require_model_runner_v2(SimpleNamespace(vllm_config=SimpleNamespace(use_v2_model_runner=False)))
 
 
 def test_reset_target_and_drafter_modules_after_restore():
@@ -265,8 +133,7 @@ def test_reset_target_and_drafter_modules_after_restore():
     drafter = _TopKHolder(shared_topk)
     runner = SimpleNamespace(
         get_model=lambda: model,
-        drafter=SimpleNamespace(model=drafter),
-        vllm_config=SimpleNamespace(use_v2_model_runner=False),
+        get_draft_model=lambda: drafter,
     )
 
     _reset_target_and_drafter_modules_after_restore(runner)
@@ -302,19 +169,3 @@ def test_reload_derived_weights_propagates_failure():
             torch.bfloat16,
             "model",
         )
-
-
-def test_reset_block_tables_clears_cpu_and_device_buffers():
-    runner = SimpleNamespace()
-    buffers = [
-        SimpleNamespace(gpu=torch.ones(2), cpu=torch.ones(2)),
-        SimpleNamespace(gpu=torch.ones(3), cpu=torch.ones(3)),
-    ]
-    block_table = SimpleNamespace(block_tables=[SimpleNamespace(block_table=buf) for buf in buffers])
-    runner.input_batch = SimpleNamespace(block_table=block_table)
-
-    _reset_block_table_runtime_state(runner)
-
-    for buf in buffers:
-        assert torch.count_nonzero(buf.gpu) == 0
-        assert torch.count_nonzero(buf.cpu) == 0

@@ -234,8 +234,7 @@ def _recapture_graph(worker) -> None:
 
     clear_all_aclgraph_entries()
     clear_graph_params_for_recapture()
-    if worker.vllm_config.use_v2_model_runner:
-        from vllm_ascend.snapshot.model_runtime.runner_v2 import reset_graph_managers
+    from vllm_ascend.snapshot.model_runtime.restore import reset_graph_managers
 
-        reset_graph_managers(worker.model_runner)
+    reset_graph_managers(worker.model_runner)
     worker.model_runner.capture_model()
