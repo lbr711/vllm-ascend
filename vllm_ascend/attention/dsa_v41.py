@@ -667,6 +667,27 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         self._device_metadata_tasks = ()
         return tasks
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        """Restore request-scoped metadata buffers to their cold-start state."""
+        self._slot_mapping.fill_(-1)
+        self._slot_mapping_2d.fill_(-1)
+        for tensor in (
+            self._seq_lens,
+            self._cache_seq_lens,
+            self._cmp_residual,
+            self._smla_metadata,
+            self._qli_metadata,
+            self._c2_ring_metadata,
+            self._c2_complete_mask,
+            self._c2_source_positions,
+            self._c2_source_sin,
+        ):
+            tensor.zero_()
+        self._c2_source_cos.fill_(1)
+        self._c2_full_source_rope = None
+        self._device_metadata_enabled = False
+        self._device_metadata_tasks = ()
+
     def _publish_task(
         self,
         shared: dict[str, Any],

@@ -5,7 +5,7 @@
 | Repository | Source | Target base | Migration branch |
 | --- | --- | --- | --- |
 | vLLM | `snapshot_0.26.0`, `e53b517f20` | `v0.29.0`, `98dff2a81d` | `snapshot_0.29.0` |
-| vLLM-Ascend | `snapshot_0.26.0rc1`, `e2128e27e` | `993782efc842308f646dcf80a562d45288f265d3` | `snapshot_0.29.0_993782ef` |
+| vLLM-Ascend | `snapshot_0.26.0rc1`, `e2128e27e` | `a71b766ce6fc0a9669a412e15a5cf53f7f827093` | `snapshot_0.29.0_a71b766ce` |
 
 The Ascend branch reuses the previous migration work on the same Ascend base,
 then adapts it to vLLM 0.29. The old deployment branches are unchanged.
@@ -24,13 +24,14 @@ Snapshot creation requires an idle service; this is not in-flight request migrat
 | V2 ACL Graph | Replace target/draft graph managers after releasing old graph resources, then use the normal capture entry. No model reload or explicit compiler-cache invalidation is added here. |
 | V2 KV prefetch | Recreate an enabled KV prefetch runtime and reconnect its model-state reference. |
 | Attention metadata | Target and draft metadata builders share the existing hook/reset dispatcher. Removed fields such as `AttentionMaskBuilder.mla_mask` are no longer reset. |
+| DSA metadata | Reset the graph-stable DSA-CP speculative buffers added after `993782ef`. DeepSeek V4.1 builders reset request metadata, queued device tasks and cached RoPE references. Re-enable every metadata provider after recreating its executor. |
+| DSA RoPE | Preserve the new sleep-mode buffer ownership while retaining snapshot-time cache validation and rebuild. Rebuild with the configured original sequence length and YaRN mode. |
 | MLA/SFA derived weights | The new implementation removes some source projections. Persist the derived/prolog tensors on their owning modules instead of replaying old derivation against deleted weights. The old SFA full-o-projection path no longer exists. |
 | KV C8 | Persist `fak_descale_reciprocal` and `quant_kscale` when snapshot is enabled: arithmetic on Parameters produces ordinary tensors, not registered parameters. |
 | MoE expert maps | V2 uses upstream device expert maps. Persist the layer's expert-map/mask/routing buffers with the existing helper, preserving aliases held by ExpertMapManager. V1 CPU maps alone are insufficient. |
 | MoE/all-to-all | Carry restore hooks into the new routed-expert, communication-method and dispatcher owners rather than the removed monolithic fused-MoE implementation. |
 | Triton | Reset loaded JIT caches in both vLLM and Ascend namespaces, including kernels behind autotuner/heuristics wrappers. Disk compilation caches are retained. This implementation targets the pinned Triton-Ascend API, not arbitrary Triton versions. |
-| KV connectors | Restore role-specific StoreConnector and Hybrid Mooncake entries; refresh cached TP group references. Respect the new Mooncake independent-store-TE mode rather than resetting an unrelated global TE. Preserve the prepare-before-rebuild ordering for shared TE references. |
-| Custom-op registration | Skip the short-lived Kimi AMD wrapper import on 0.29, where that upstream module does not exist. |
+| KV connectors | Restore role-specific StoreConnector and Hybrid Mooncake entries; refresh cached TP group references. Respect the new Mooncake independent-store TransferEngine mode rather than resetting an unrelated global TransferEngine. Preserve the prepare-before-rebuild ordering for shared TransferEngine references. |
 
 ## Resource ownership
 
@@ -52,6 +53,8 @@ CPU/mocked-device validation performed during migration:
 - Focused connector snapshot/rebuild cases: 11 passed (32 subtests).
 - Expert-map and pool backend suites: 116 passed (102 subtests).
 - Ruff checks on changed Python files and `git diff --check` passed.
+- New-baseline snapshot, DSA/DSA-CP/V4.1 metadata, RoPE/sleep ownership,
+  ModelRunner V1/V2, MoE/quantization and connector rebuild groups passed.
 
 These tests do not execute NPU kernels, native communication teardown or CRIU.
 They do not establish numerical equivalence after restore. An existing unrelated

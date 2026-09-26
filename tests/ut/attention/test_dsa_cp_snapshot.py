@@ -40,6 +40,8 @@ def test_metadata_builder_reset_restores_cold_start_state():
     builder.spec_slot_mapping = [torch.full((4, 2), 53, dtype=torch.int32)]
     builder.spec_local_query_start_loc = [torch.full((5,), 59, dtype=torch.int32)]
     builder.spec_local_seq_lens = [torch.full((4,), 61, dtype=torch.int32)]
+    builder.spec_sas_metadata = [torch.full((8,), 67, dtype=torch.int32)]
+    builder.spec_start_pos = [torch.full((4,), 71, dtype=torch.int32)]
     builder.common_ratio_to_sas_metadata = {
         "input_positions": torch.ones(1),
         "cp_sas_c4": torch.ones(1),
@@ -80,6 +82,8 @@ def test_metadata_builder_reset_restores_cold_start_state():
         *builder.spec_slot_mapping,
         *builder.spec_local_query_start_loc,
         *builder.spec_local_seq_lens,
+        *builder.spec_sas_metadata,
+        *builder.spec_start_pos,
     ]
     assert all(torch.count_nonzero(buffer) == 0 for buffer in buffers)
 

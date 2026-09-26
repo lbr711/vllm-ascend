@@ -218,10 +218,9 @@ class ComplexExpRotaryEmbedding(nn.Module):
             f"original_seq_len{original_seq_len}_apply_yarn{apply_yarn_scaling}_base{base}_scaling_factor{scaling_factor}_"
             f"beta_fast{beta_fast}_beta_slow{beta_slow}"
         )
-        # Persist everything required to rebuild the (device-resident, non
-        # nn.Buffer) cos/sin caches after a snapshot restore. These caches live
-        # in the module-level ``_ROPE_STATE`` global, so they are NOT part of
-        # ``state_dict`` and are never re-materialized by ``restore_model``.
+        # Keep everything required to rebuild the device-resident cos/sin
+        # caches after a snapshot restore. The cache tensors are registered as
+        # non-persistent buffers below, so they are not restored by state_dict.
         self._config_key = config_key
         self._max_position_embeddings = max_position_embeddings
         self._original_seq_len = original_seq_len

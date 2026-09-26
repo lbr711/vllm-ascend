@@ -1,6 +1,7 @@
 import torch
 
 from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
+from vllm_ascend.attention.dsa_v41 import AscendDSAV41MetadataBuilder
 
 
 def test_metadata_builder_reset_restores_cold_start_state():
@@ -53,3 +54,36 @@ def test_metadata_builder_reset_restores_cold_start_state():
     assert torch.count_nonzero(builder.spec_slot_mapping[0]) == 0
     assert torch.count_nonzero(builder.spec_sas_metadata[0]) == 0
     assert torch.count_nonzero(builder.dspark_swa_indices_buffer) == 0
+
+
+def test_v41_metadata_builder_reset_restores_cold_start_state():
+    builder = AscendDSAV41MetadataBuilder.__new__(AscendDSAV41MetadataBuilder)
+    builder._slot_mapping = torch.ones(4, dtype=torch.int64)
+    builder._slot_mapping_2d = torch.ones((4, 2), dtype=torch.int32)
+    zeroed_names = (
+        "_seq_lens",
+        "_cache_seq_lens",
+        "_cmp_residual",
+        "_smla_metadata",
+        "_qli_metadata",
+        "_c2_ring_metadata",
+        "_c2_complete_mask",
+        "_c2_source_positions",
+        "_c2_source_sin",
+    )
+    for name in zeroed_names:
+        setattr(builder, name, torch.ones(4, dtype=torch.int32))
+    builder._c2_source_cos = torch.zeros(4)
+    builder._c2_full_source_rope = (torch.ones(1), torch.ones(1))
+    builder._device_metadata_enabled = True
+    builder._device_metadata_tasks = (object(),)
+
+    builder.reset_runtime_state_after_snapshot_restore()
+
+    assert torch.all(builder._slot_mapping == -1)
+    assert torch.all(builder._slot_mapping_2d == -1)
+    assert all(torch.count_nonzero(getattr(builder, name)) == 0 for name in zeroed_names)
+    assert torch.all(builder._c2_source_cos == 1)
+    assert builder._c2_full_source_rope is None
+    assert builder._device_metadata_enabled is False
+    assert builder._device_metadata_tasks == ()

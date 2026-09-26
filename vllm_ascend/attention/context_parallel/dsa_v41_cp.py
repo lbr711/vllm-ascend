@@ -44,6 +44,10 @@ class _ReplicatedCacheMetadataBuilder(AscendDSAV41MetadataBuilder):
             *super().take_device_metadata_tasks(),
         )
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        self._global_builder.reset_runtime_state_after_snapshot_restore()
+
     def _build_global_metadata(self, common_prefix_len, common, fast_build, kwargs):
         global_kwargs = dict(kwargs)
         shared = kwargs.get("common_v41_metadata")
@@ -60,6 +64,10 @@ class AscendDSAV41CPMetadataBuilder(_ReplicatedCacheMetadataBuilder):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
         # SMLA consumes INT32 offsets at a fixed address during graph replay.
         self._cp_query_start_loc = self._seq_lens.new_zeros(self._seq_lens.numel() + 1)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        self._cp_query_start_loc.zero_()
 
     # Reuse Legacy DSACP's request intersection and causal-prefix calculation.
     _local_token_range = staticmethod(AscendDSACPMetadataBuilder._local_token_range)

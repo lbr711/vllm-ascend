@@ -378,6 +378,8 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             "spec_slot_mapping",
             "spec_local_query_start_loc",
             "spec_local_seq_lens",
+            "spec_sas_metadata",
+            "spec_start_pos",
         ):
             tensors = getattr(self, attr_name, None)
             if tensors is not None:

@@ -196,8 +196,10 @@ def test_reset_runner_input_runtime_state():
 def test_rebuild_runner_native_resources():
     old_device_executor = object()
     old_prefetch_executor = MagicMock()
+    metadata_provider = MagicMock()
     runner = SimpleNamespace(
         device_metadata_executor=old_device_executor,
+        device_metadata_providers={1: metadata_provider},
         reset_encoder_cache=MagicMock(),
         _pending_spec_decode_metadata_copies=[object()],
         kvpp=SimpleNamespace(scheduler=SimpleNamespace(_prefetch_executor=old_prefetch_executor)),
@@ -221,6 +223,7 @@ def test_rebuild_runner_native_resources():
         _rebuild_runner_native_resources(runner)
 
     assert runner.device_metadata_executor is new_device_executor
+    metadata_provider.enable_device_metadata.assert_called_once_with()
     runner.reset_encoder_cache.assert_called_once_with()
     assert runner._pending_spec_decode_metadata_copies == []
     old_prefetch_executor.shutdown.assert_called_once_with(wait=True)
