@@ -98,7 +98,7 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
     assert restore_one.call_args_list[0].args[3] == "model"
     assert restore_one.call_args_list[1].args[1] is drafter_model
     assert restore_one.call_args_list[1].args[3] == "drafter"
-    restore_runtime.assert_called_once_with(runner, model)
+    restore_runtime.assert_called_once_with(runner)
 
 
 def test_restore_model_runner_runtime_state_runs_all_phases():
@@ -106,15 +106,15 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
     model = runner.get_model()
 
     with (
-        patch("vllm_ascend.snapshot.model_runtime.restore.restore_global_tensor_state") as restore_global,
+        patch("vllm_ascend.snapshot.model_runtime.restore.reload_cos_and_sin_after_restore") as reload_rope,
         patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_runtime_state") as reset_runner,
         patch(
             "vllm_ascend.snapshot.model_runtime.restore._reset_target_and_drafter_modules_after_restore"
         ) as reset_modules,
     ):
-        _restore_model_runner_runtime_state(runner, model)
+        _restore_model_runner_runtime_state(runner)
 
-    restore_global.assert_called_once_with(model)
+    reload_rope.assert_called_once_with(model)
     reset_runner.assert_called_once_with(runner)
     reset_modules.assert_called_once_with(runner)
 

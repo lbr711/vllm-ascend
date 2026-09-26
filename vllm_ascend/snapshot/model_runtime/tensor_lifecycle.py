@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Model tensor persistence and global tensor restoration helpers."""
+"""Model tensor persistence helpers."""
 
 from collections.abc import Iterable
 
@@ -30,11 +30,3 @@ def set_persistent_tensor(module: nn.Module, name: str, tensor: torch.Tensor) ->
     else:
         module.register_buffer(name, tensor)
     return module._buffers[name]
-
-
-def restore_global_tensor_state(
-    model: nn.Module,
-) -> None:
-    from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
-
-    reload_cos_and_sin_after_restore(model)

@@ -7,12 +7,12 @@ import torch
 import torch.nn as nn
 from vllm.distributed.parallel_state import get_tp_group
 
+from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
 from vllm_ascend.snapshot.model_runtime.checkpoint import dump_state_dict, restore_state_dict
 from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
 )
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import restore_global_tensor_state
 
 
 def get_drafter_model(runner) -> nn.Module | None:
@@ -77,16 +77,16 @@ def restore_model_runner(runner, path: str = "/mnt") -> None:
             "drafter",
         )
 
-    _restore_model_runner_runtime_state(runner, model)
+    _restore_model_runner_runtime_state(runner)
 
 
-def _restore_model_runner_runtime_state(runner, model: nn.Module) -> None:
+def _restore_model_runner_runtime_state(runner) -> None:
     """Prepare all non-checkpoint model-runner state for post-restore inference.
 
     This includes global derived tensors, speculative-decoding state, attention
     metadata, runner input buffers, model-module runtime state, and block tables.
     """
-    restore_global_tensor_state(model)
+    reload_cos_and_sin_after_restore(runner.get_model())
     _reset_runner_runtime_state(runner)
     _reset_target_and_drafter_modules_after_restore(runner)
 
