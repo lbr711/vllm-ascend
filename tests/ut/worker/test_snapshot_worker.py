@@ -307,7 +307,7 @@ def test_recapture_graph_clears_and_recaptures(worker):
     with (
         patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries") as mock_clear_entries,
         patch("vllm_ascend.compilation.acl_graph.clear_graph_params_for_recapture") as mock_clear_params,
-        patch("vllm_ascend.snapshot.model_runtime.restore.reset_graph_managers") as reset_graph_managers,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reset_graph_managers") as reset_graph_managers,
     ):
         _recapture_graph(worker)
 

@@ -42,7 +42,10 @@ from vllm_ascend.ops.fused_moe.force_eplb import get_force_eplb_topk
 from vllm_ascend.ops.fused_moe.moe_comm_method import AllGatherCommImpl, FusedExpertsResult
 from vllm_ascend.ops.fused_moe.moe_utils import get_moe_num_logical_experts
 from vllm_ascend.quantization.quant_type import QuantType
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes, persist_tensor_lists
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import (
+    persist_tensor_attributes,
+    persist_tensor_lists,
+)
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, maybe_trans_nz
 
 

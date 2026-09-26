@@ -54,7 +54,7 @@ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.attention_fence im
 from vllm_ascend.ops.rotary_embedding import get_cos_and_sin_mla
 from vllm_ascend.quantization.methods import AscendW8A8LinearMethod, AscendW8A8MXFP8DynamicLinearMethod
 from vllm_ascend.quantization.utils import enable_fa_quant
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import set_persistent_tensor
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,

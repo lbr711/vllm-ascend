@@ -1,11 +1,47 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dispatch snapshot-restore lifecycle hooks to model modules."""
+"""Restore model module tensors and runtime state."""
 
+import os
+import time
 from collections.abc import Iterable, Iterator
 
 import torch
 import torch.nn as nn
+from vllm.logger import logger
+
+from vllm_ascend.snapshot.model_runner_lifecycle.h2d_copy import copy_checkpoint_tensor
+
+
+def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
+    if not os.path.exists(path):
+        logger.error(
+            "[snapshot][checkpoint] restore failed: model=%s path=%s reason=not_found",
+            label,
+            path,
+        )
+        raise FileNotFoundError(f"Snapshot checkpoint does not exist: {path}")
+
+    start = time.time()
+    state_dict = torch.load(path, map_location="cpu", mmap=True)
+    restored = 0
+    parameters = dict(model.named_parameters())
+    buffers = dict(model.named_buffers())
+    for name, cpu_tensor in state_dict.items():
+        if name in parameters:
+            copy_checkpoint_tensor(parameters[name].data, cpu_tensor)
+            restored += 1
+        if name in buffers:
+            copy_checkpoint_tensor(buffers[name].data, cpu_tensor)
+            restored += 1
+    logger.info(
+        "[snapshot][checkpoint] restore completed: model=%s path=%s tensors=%d/%d duration=%.4f s",
+        label,
+        path,
+        restored,
+        len(state_dict),
+        time.time() - start,
+    )
 
 
 def _iter_modules_and_impls(models: Iterable[nn.Module | None]) -> Iterator[object]:

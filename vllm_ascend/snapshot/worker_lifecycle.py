@@ -16,7 +16,7 @@ from vllm.utils.network_utils import get_distributed_init_method
 
 from vllm_ascend.distributed.parallel_state import destroy_ascend_model_parallel
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
-from vllm_ascend.snapshot.model_runtime.restore import dump_model_runner, restore_model_runner
+from vllm_ascend.snapshot.model_runner_lifecycle.restore import dump_model_runner, restore_model_runner
 
 _ACL_RT_LIB: CDLL | None = None
 
@@ -234,7 +234,7 @@ def _recapture_graph(worker) -> None:
 
     clear_all_aclgraph_entries()
     clear_graph_params_for_recapture()
-    from vllm_ascend.snapshot.model_runtime.restore import reset_graph_managers
+    from vllm_ascend.snapshot.model_runner_lifecycle.restore import reset_graph_managers
 
     reset_graph_managers(worker.model_runner)
     worker.model_runner.capture_model()

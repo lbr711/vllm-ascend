@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_ascend.snapshot.model_runtime.restore import (
+from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
     _reset_block_tables,
     _reset_input_buffers,
     _reset_request_state,

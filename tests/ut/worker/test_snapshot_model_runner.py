@@ -4,11 +4,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from vllm_ascend.snapshot.model_runtime.module_lifecycle import (
+from vllm_ascend.snapshot.model_runner_lifecycle.module_restore import (
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
 )
-from vllm_ascend.snapshot.model_runtime.restore import (
+from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
     _require_model_runner_v2,
     _reset_target_and_drafter_modules_after_restore,
     _restore_model_runner_runtime_state,
@@ -69,8 +69,8 @@ def test_dump_model_runner_dumps_target_and_drafter(tmp_path):
     runner = _make_runner(torch.nn.Module(), torch.nn.Module())
 
     with (
-        patch("vllm_ascend.snapshot.model_runtime.restore.get_tp_group") as tp_group,
-        patch("vllm_ascend.snapshot.model_runtime.restore.dump_state_dict") as dump,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.dump_state_dict") as dump,
     ):
         tp_group.return_value.rank_in_group = 3
         dump_model_runner(runner, str(tmp_path))
@@ -86,9 +86,11 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
     runner = _make_runner(model, drafter_model)
 
     with (
-        patch("vllm_ascend.snapshot.model_runtime.restore.get_tp_group") as tp_group,
-        patch("vllm_ascend.snapshot.model_runtime.restore._restore_model_checkpoint") as restore_one,
-        patch("vllm_ascend.snapshot.model_runtime.restore._restore_model_runner_runtime_state") as restore_runtime,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._restore_model_checkpoint") as restore_one,
+        patch(
+            "vllm_ascend.snapshot.model_runner_lifecycle.restore._restore_model_runner_runtime_state"
+        ) as restore_runtime,
     ):
         tp_group.return_value.rank_in_group = 3
         restore_model_runner(runner, str(tmp_path))
@@ -106,10 +108,10 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
     model = runner.get_model()
 
     with (
-        patch("vllm_ascend.snapshot.model_runtime.restore.reload_cos_and_sin_after_restore") as reload_rope,
-        patch("vllm_ascend.snapshot.model_runtime.restore._reset_runner_runtime_state") as reset_runner,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reload_cos_and_sin_after_restore") as reload_rope,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_runner_runtime_state") as reset_runner,
         patch(
-            "vllm_ascend.snapshot.model_runtime.restore._reset_target_and_drafter_modules_after_restore"
+            "vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_target_and_drafter_modules_after_restore"
         ) as reset_modules,
     ):
         _restore_model_runner_runtime_state(runner)

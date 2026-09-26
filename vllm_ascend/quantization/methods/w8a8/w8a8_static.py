@@ -21,7 +21,7 @@ import torch
 import torch_npu
 from vllm.config import get_current_vllm_config
 
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import persist_tensor_attributes
 from vllm_ascend.utils import (
     COMPRESSED_TENSORS_METHOD,
     maybe_trans_nz,

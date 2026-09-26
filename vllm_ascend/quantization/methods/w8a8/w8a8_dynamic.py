@@ -35,7 +35,7 @@ from vllm_ascend.ops.fused_moe.moe_utils import (
     cumsum_group_list,
 )
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts  # noqa: F401
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import (
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import (
     persist_tensor_attributes,
     persist_tensor_lists,
 )

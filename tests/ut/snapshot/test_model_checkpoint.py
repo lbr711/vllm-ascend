@@ -5,8 +5,8 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from vllm_ascend.snapshot.model_runtime.checkpoint import restore_state_dict
-from vllm_ascend.snapshot.model_runtime.h2d_copy import _W4A8V1NZPackedCopyStrategy
+from vllm_ascend.snapshot.model_runner_lifecycle.h2d_copy import _W4A8V1NZPackedCopyStrategy
+from vllm_ascend.snapshot.model_runner_lifecycle.module_restore import restore_state_dict
 
 
 class _Model(torch.nn.Module):
@@ -39,7 +39,7 @@ def test_restore_state_dict_rejects_missing_checkpoint(tmp_path) -> None:
 
 
 @patch(
-    "vllm_ascend.snapshot.model_runtime.h2d_copy.torch_npu.npu_format_cast",
+    "vllm_ascend.snapshot.model_runner_lifecycle.h2d_copy.torch_npu.npu_format_cast",
     side_effect=lambda tensor, _: tensor,
 )
 def test_w4a8_v1_nz_packed_strategy_copies_bytes(mock_format_cast) -> None:

@@ -4,7 +4,7 @@ from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_pa
 from vllm.logger import logger
 
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
-from vllm_ascend.snapshot.model_runtime.tensor_lifecycle import persist_tensor_attributes
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import persist_tensor_attributes
 
 from ..base import AscendAttentionScheme
 from ..registry import register_scheme
