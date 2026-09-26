@@ -4,15 +4,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+from vllm_ascend.snapshot.model_runner_lifecycle.checkpoint import dump_model_runner
 from vllm_ascend.snapshot.model_runner_lifecycle.module_restore import (
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
-    _require_model_runner_v2,
     _reset_target_and_drafter_modules_after_restore,
     _restore_model_runner_runtime_state,
-    dump_model_runner,
     restore_model_runner,
 )
 
@@ -69,8 +68,8 @@ def test_dump_model_runner_dumps_target_and_drafter(tmp_path):
     runner = _make_runner(torch.nn.Module(), torch.nn.Module())
 
     with (
-        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.get_tp_group") as tp_group,
-        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.dump_state_dict") as dump,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.checkpoint.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.checkpoint.dump_state_dict") as dump,
     ):
         tp_group.return_value.rank_in_group = 3
         dump_model_runner(runner, str(tmp_path))
@@ -119,11 +118,6 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
     reload_rope.assert_called_once_with(model)
     reset_runner.assert_called_once_with(runner)
     reset_modules.assert_called_once_with(runner)
-
-
-def test_snapshot_rejects_model_runner_v1():
-    with pytest.raises(RuntimeError, match="requires Model Runner V2"):
-        _require_model_runner_v2(SimpleNamespace(vllm_config=SimpleNamespace(use_v2_model_runner=False)))
 
 
 def test_reset_target_and_drafter_modules_after_restore():
