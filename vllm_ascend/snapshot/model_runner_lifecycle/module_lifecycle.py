@@ -75,6 +75,18 @@ def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
     )
 
 
+def get_drafter_model(runner) -> nn.Module | None:
+    """Return the target runner's separately owned draft model, if any."""
+    if runner.vllm_config.use_v2_model_runner:
+        return runner.get_draft_model()
+
+    from vllm_ascend.spec_decode.llm_base_proposer import AscendSpecDecodeBaseProposer
+
+    if isinstance(runner.drafter, AscendSpecDecodeBaseProposer):
+        return runner.drafter.get_model()
+    return None
+
+
 def _iter_modules_and_impls(models: Iterable[nn.Module | None]) -> Iterator[object]:
     """Yield each model module followed by its backend implementation."""
     visited_ids: set[int] = set()

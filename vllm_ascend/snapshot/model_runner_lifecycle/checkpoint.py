@@ -4,7 +4,10 @@ import os
 
 from vllm.distributed.parallel_state import get_tp_group
 
-from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import dump_state_dict
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
+    dump_state_dict,
+    get_drafter_model,
+)
 
 
 def dump_model_runner(runner, path: str = "/mnt") -> None:
@@ -19,7 +22,7 @@ def dump_model_runner(runner, path: str = "/mnt") -> None:
     )
     # The drafter owns a separate model and derived tensors, so it cannot share
     # the target model's checkpoint file.
-    drafter_model = runner.get_draft_model()
+    drafter_model = get_drafter_model(runner)
     if drafter_model is not None:
         dump_state_dict(
             drafter_model,

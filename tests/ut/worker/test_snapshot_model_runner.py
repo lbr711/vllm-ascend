@@ -6,11 +6,15 @@ import torch
 
 from vllm_ascend.snapshot.model_runner_lifecycle.checkpoint import dump_model_runner
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
+    get_drafter_model,
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
     _reset_target_and_drafter_modules_after_restore,
+    _reset_v1_block_tables,
+    _reset_v1_input_runtime_state,
+    _reset_v1_spec_decode_runtime_state,
     _restore_model_runner_runtime_state,
     restore_model_runner,
 )
@@ -102,13 +106,32 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
     restore_runtime.assert_called_once_with(runner)
 
 
+def test_v1_draft_checkpoint_uses_model_proposer():
+    model = torch.nn.Module()
+
+    class ModelProposer:
+        def get_model(self):
+            return model
+
+    runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(use_v2_model_runner=False),
+        drafter=ModelProposer(),
+    )
+    with patch(
+        "vllm_ascend.spec_decode.llm_base_proposer.AscendSpecDecodeBaseProposer",
+        ModelProposer,
+    ):
+        assert get_drafter_model(runner) is model
+
+
 def test_restore_model_runner_runtime_state_runs_all_phases():
     runner = _make_runner(torch.nn.Module(), torch.nn.Module())
     model = runner.get_model()
 
     with (
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reload_cos_and_sin_after_restore") as reload_rope,
-        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_runner_runtime_state") as reset_runner,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v2_runner_runtime_state") as reset_runner,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v1_runner_runtime_state") as reset_v1,
         patch(
             "vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_target_and_drafter_modules_after_restore"
         ) as reset_modules,
@@ -117,7 +140,93 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
 
     reload_rope.assert_called_once_with(model)
     reset_runner.assert_called_once_with(runner)
+    reset_v1.assert_not_called()
     reset_modules.assert_called_once_with(runner)
+
+
+def test_restore_model_runner_runtime_state_dispatches_v1():
+    model = torch.nn.Module()
+    runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(use_v2_model_runner=False),
+        get_model=lambda: model,
+    )
+
+    with (
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reload_cos_and_sin_after_restore"),
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v2_runner_runtime_state") as reset_v2,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v1_runner_runtime_state") as reset_v1,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_target_and_drafter_modules_after_restore"),
+    ):
+        _restore_model_runner_runtime_state(runner)
+
+    reset_v1.assert_called_once_with(runner)
+    reset_v2.assert_not_called()
+
+
+def test_reset_v1_spec_decode_runtime_state():
+    runner = SimpleNamespace(
+        _draft_token_req_ids=["request"],
+        _draft_token_ids=torch.ones((1, 1), dtype=torch.int32),
+        _draft_probs=torch.ones((1, 1)),
+        _draft_prob_req_ids=["request"],
+        prev_num_spec_tokens=1,
+        num_spec_tokens=3,
+        input_batch=SimpleNamespace(prev_req_id_to_index={"request": 0}),
+    )
+
+    _reset_v1_spec_decode_runtime_state(runner)
+
+    assert runner._draft_token_req_ids is None
+    assert runner._draft_token_ids is None
+    assert runner._draft_probs is None
+    assert runner._draft_prob_req_ids is None
+    assert runner.prev_num_spec_tokens == 3
+    assert runner.input_batch.prev_req_id_to_index is None
+
+
+def test_reset_v1_input_runtime_state():
+    runner = SimpleNamespace(
+        use_dcp=True,
+        dcp_manager=MagicMock(),
+        positions=torch.ones(4),
+        _positions_cpu_buf=torch.ones(4),
+        input_batch=SimpleNamespace(
+            num_computed_tokens_cpu_tensor=torch.ones(4),
+            num_prompt_tokens_cpu_tensor=torch.ones(4),
+        ),
+        group_len=SimpleNamespace(gpu=torch.ones(4), cpu=torch.ones(4)),
+        group_key_idx=SimpleNamespace(gpu=torch.ones(4), cpu=torch.ones(4)),
+        group_key_cache_idx=SimpleNamespace(gpu=torch.ones(4), cpu=torch.ones(4)),
+    )
+
+    _reset_v1_input_runtime_state(runner)
+
+    assert torch.count_nonzero(runner.positions) == 0
+    assert torch.count_nonzero(runner._positions_cpu_buf) == 0
+    assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
+    assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
+    runner.dcp_manager.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
+    for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
+        assert torch.count_nonzero(staged.gpu) == 0
+        assert torch.count_nonzero(staged.cpu) == 0
+
+
+def test_reset_v1_block_tables():
+    buffers = [
+        SimpleNamespace(gpu=torch.ones(2), cpu=torch.ones(2)),
+        SimpleNamespace(gpu=torch.ones(3), cpu=torch.ones(3)),
+    ]
+    runner = SimpleNamespace(
+        input_batch=SimpleNamespace(
+            block_table=SimpleNamespace(block_tables=[SimpleNamespace(block_table=buffer) for buffer in buffers])
+        )
+    )
+
+    _reset_v1_block_tables(runner)
+
+    for buffer in buffers:
+        assert torch.count_nonzero(buffer.gpu) == 0
+        assert torch.count_nonzero(buffer.cpu) == 0
 
 
 def test_reset_target_and_drafter_modules_after_restore():
@@ -128,6 +237,7 @@ def test_reset_target_and_drafter_modules_after_restore():
     model.backend = _ImplHolder(backend)
     drafter = _TopKHolder(shared_topk)
     runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(use_v2_model_runner=True),
         get_model=lambda: model,
         get_draft_model=lambda: drafter,
     )

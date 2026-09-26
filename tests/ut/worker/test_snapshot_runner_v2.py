@@ -7,12 +7,12 @@ import numpy as np
 import pytest
 import torch
 
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import get_drafter_model
 from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
     _reset_block_tables,
     _reset_input_buffers,
     _reset_request_state,
     _reset_speculator,
-    get_drafter_model,
     reset_graph_managers,
 )
 

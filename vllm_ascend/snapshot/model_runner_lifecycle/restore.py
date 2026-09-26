@@ -9,15 +9,11 @@ from vllm.distributed.parallel_state import get_tp_group
 
 from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
+    get_drafter_model,
     rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
     restore_state_dict,
 )
-
-
-def get_drafter_model(runner) -> nn.Module | None:
-    """Return the speculative decoder's model when it owns one."""
-    return runner.get_draft_model()
 
 
 def _restore_model_checkpoint(runner, model: nn.Module, model_save_path: str, label: str) -> None:
@@ -60,7 +56,10 @@ def _restore_model_runner_runtime_state(runner) -> None:
     metadata, runner input buffers, model-module runtime state, and block tables.
     """
     reload_cos_and_sin_after_restore(runner.get_model())
-    _reset_runner_runtime_state(runner)
+    if runner.vllm_config.use_v2_model_runner:
+        _reset_v2_runner_runtime_state(runner)
+    else:
+        _reset_v1_runner_runtime_state(runner)
     _reset_target_and_drafter_modules_after_restore(runner)
 
 
@@ -194,7 +193,7 @@ def _reset_metadata_builders(builders) -> None:
             reset_state()
 
 
-def _reset_runner_runtime_state(runner) -> None:
+def _reset_v2_runner_runtime_state(runner) -> None:
     from vllm.v1.worker.gpu import pcp_manager
     from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
 
@@ -243,6 +242,95 @@ def _reset_runner_runtime_state(runner) -> None:
             static_forward_context=runner.compilation_config.static_forward_context,
         )
         runner.model_state.kvpp_runtime = runner.kvpp
+
+
+def _reset_v1_runner_runtime_state(runner) -> None:
+    _reset_v1_spec_decode_runtime_state(runner)
+    _restore_v1_drafter_runtime_state(runner)
+    _reset_v1_attention_builders(runner)
+    _rebuild_v1_native_resources(runner)
+    _reset_v1_input_runtime_state(runner)
+    _reset_v1_block_tables(runner)
+
+
+def _reset_v1_spec_decode_runtime_state(runner) -> None:
+    """Clear request carry-over owned by Model Runner V1 spec decode."""
+    if hasattr(runner, "_draft_token_req_ids"):
+        runner._draft_token_req_ids = None
+    if hasattr(runner, "_draft_token_ids"):
+        runner._draft_token_ids = None
+    if hasattr(runner, "_draft_probs"):
+        runner._draft_probs = None
+    if hasattr(runner, "_draft_prob_req_ids"):
+        runner._draft_prob_req_ids = None
+    if hasattr(runner, "prev_num_spec_tokens"):
+        runner.prev_num_spec_tokens = runner.num_spec_tokens
+    runner.input_batch.prev_req_id_to_index = None
+
+
+def _restore_v1_drafter_runtime_state(runner) -> None:
+    from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
+
+    if isinstance(runner.drafter, AscendEagleProposer):
+        runner.drafter.restore_runtime_buffers()
+
+
+def _reset_v1_attention_builders(runner) -> None:
+    from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
+
+    builders = [
+        builder
+        for kv_groups in runner.attn_groups
+        for attn_group in kv_groups
+        for builder in attn_group.metadata_builders
+    ]
+    if isinstance(runner.drafter, AscendEagleProposer):
+        builders.extend(
+            builder for attn_group in runner.drafter.draft_attn_groups for builder in attn_group.metadata_builders
+        )
+    _reset_metadata_builders(builders)
+
+
+def _rebuild_v1_native_resources(runner) -> None:
+    if runner.device_metadata_executor is not None:
+        from vllm_ascend.worker.device_metadata import DeviceMetadataExecutor
+
+        runner.device_metadata_executor = DeviceMetadataExecutor()
+        assert runner.device_metadata_providers is not None
+        for provider in runner.device_metadata_providers.values():
+            provider.enable_device_metadata()
+
+    runner.reset_encoder_cache()
+    runner._pending_spec_decode_metadata_copies.clear()
+
+    if runner.kvpp.scheduler is not None:
+        runner.kvpp.scheduler._prefetch_executor.shutdown(wait=True)
+        from vllm_ascend.worker.v2.kvpp import KVPPRuntime
+
+        runner.kvpp = KVPPRuntime.create_from_kv_cache(
+            vllm_config=runner.vllm_config,
+            kv_cache_config=runner.kv_cache_config,
+            static_forward_context=runner.compilation_config.static_forward_context,
+        )
+
+
+def _reset_v1_input_runtime_state(runner) -> None:
+    runner.positions.zero_()
+    runner._positions_cpu_buf.zero_()
+    runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
+    runner.input_batch.num_prompt_tokens_cpu_tensor.zero_()
+    if runner.use_dcp:
+        runner.dcp_manager.reset_runtime_state_after_snapshot_restore()
+
+    for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
+        staged.gpu.zero_()
+        staged.cpu.zero_()
+
+
+def _reset_v1_block_tables(runner) -> None:
+    for block_table in runner.input_batch.block_table.block_tables:
+        block_table.block_table.gpu.zero_()
+        block_table.block_table.cpu.zero_()
 
 
 def _reset_target_and_drafter_modules_after_restore(runner) -> None:

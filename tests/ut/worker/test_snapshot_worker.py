@@ -314,4 +314,18 @@ def test_recapture_graph_clears_and_recaptures(worker):
     mock_clear_entries.assert_called_once()
     mock_clear_params.assert_called_once()
     reset_graph_managers.assert_called_once_with(worker.model_runner)
-    worker.model_runner.capture_model.assert_called_once()
+
+
+def test_recapture_graph_v1_skips_v2_graph_manager_reset(worker):
+    from vllm_ascend.snapshot.worker_lifecycle import _recapture_graph
+
+    worker.vllm_config.use_v2_model_runner = False
+    with (
+        patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries"),
+        patch("vllm_ascend.compilation.acl_graph.clear_graph_params_for_recapture"),
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reset_graph_managers") as reset_graph_managers,
+    ):
+        _recapture_graph(worker)
+
+    reset_graph_managers.assert_not_called()
+    worker.model_runner.capture_model.assert_called_once_with()
