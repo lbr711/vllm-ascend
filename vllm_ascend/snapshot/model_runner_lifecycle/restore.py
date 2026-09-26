@@ -292,14 +292,6 @@ def _reset_v1_attention_builders(runner) -> None:
 
 
 def _rebuild_v1_native_resources(runner) -> None:
-    if runner.device_metadata_executor is not None:
-        from vllm_ascend.worker.device_metadata import DeviceMetadataExecutor
-
-        runner.device_metadata_executor = DeviceMetadataExecutor()
-        assert runner.device_metadata_providers is not None
-        for provider in runner.device_metadata_providers.values():
-            provider.enable_device_metadata()
-
     runner.reset_encoder_cache()
     runner._pending_spec_decode_metadata_copies.clear()
 

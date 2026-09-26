@@ -11,6 +11,7 @@ from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     reset_modules_runtime_state,
 )
 from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
+    _rebuild_v1_native_resources,
     _reset_target_and_drafter_modules_after_restore,
     _reset_v1_block_tables,
     _reset_v1_input_runtime_state,
@@ -227,6 +228,25 @@ def test_reset_v1_block_tables():
     for buffer in buffers:
         assert torch.count_nonzero(buffer.gpu) == 0
         assert torch.count_nonzero(buffer.cpu) == 0
+
+
+def test_rebuild_v1_native_resources_preserves_device_metadata_executor():
+    executor = object()
+    provider = MagicMock()
+    runner = SimpleNamespace(
+        device_metadata_executor=executor,
+        device_metadata_providers={1: provider},
+        reset_encoder_cache=MagicMock(),
+        _pending_spec_decode_metadata_copies=[object()],
+        kvpp=SimpleNamespace(scheduler=None),
+    )
+
+    _rebuild_v1_native_resources(runner)
+
+    assert runner.device_metadata_executor is executor
+    provider.enable_device_metadata.assert_not_called()
+    runner.reset_encoder_cache.assert_called_once_with()
+    assert not runner._pending_spec_decode_metadata_copies
 
 
 def test_reset_target_and_drafter_modules_after_restore():
