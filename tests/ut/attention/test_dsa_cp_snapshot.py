@@ -48,7 +48,11 @@ def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     }
     builder._device_metadata_enabled = True
     builder._device_metadata_tasks = (object(),)
-    compressor_metadata_buffers = object()
+    compressor_metadata_buffers = (
+        torch.ones(4),
+        torch.ones(4),
+        builder.slot_mapping,
+    )
     builder.compressor_metadata_buffers = compressor_metadata_buffers
     builder.hadamard = None
 
@@ -66,6 +70,8 @@ def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     assert builder._device_metadata_enabled is True
     assert builder._device_metadata_tasks == ()
     assert builder.compressor_metadata_buffers is compressor_metadata_buffers
+    assert torch.count_nonzero(compressor_metadata_buffers[0]) == 0
+    assert torch.count_nonzero(compressor_metadata_buffers[1]) == 0
 
     buffers = [
         builder.start_pos_prefill,

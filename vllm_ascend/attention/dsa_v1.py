@@ -721,6 +721,10 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.seq_lens = None
         self._device_metadata_tasks = ()
 
+        if self.compressor_metadata_buffers is not None:
+            for tensor in self.compressor_metadata_buffers[:2]:
+                tensor.zero_()
+
         if self.common_ratio_to_sas_metadata is not None:
             self.common_ratio_to_sas_metadata.clear()
 

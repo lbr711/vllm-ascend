@@ -352,6 +352,10 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.seq_lens_cpu = None
         self._device_metadata_tasks = ()
 
+        if self.compressor_metadata_buffers is not None:
+            for tensor in self.compressor_metadata_buffers[:2]:
+                tensor.zero_()
+
         metadata_cache = getattr(self, "common_ratio_to_sas_metadata", None)
         if metadata_cache is not None:
             metadata_cache.clear()

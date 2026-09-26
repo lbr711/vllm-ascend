@@ -16,8 +16,6 @@ def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     builder.common_ratio_to_sas_metadata = {"stale": object()}
     builder._device_metadata_enabled = True
     builder._device_metadata_tasks = (object(),)
-    compressor_metadata_buffers = object()
-    builder.compressor_metadata_buffers = compressor_metadata_buffers
     builder.hadamard = None
     builder.dspark_swa_indices_buffer = torch.ones(2, dtype=torch.int32)
 
@@ -35,6 +33,12 @@ def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     )
     for name in tensor_names:
         setattr(builder, name, torch.ones(2, dtype=torch.int32))
+    compressor_metadata_buffers = (
+        torch.ones(2),
+        torch.ones(2),
+        builder.slot_mapping,
+    )
+    builder.compressor_metadata_buffers = compressor_metadata_buffers
     builder.spec_slot_mapping = [torch.ones(2, dtype=torch.int32)]
     builder.spec_sas_metadata = [torch.ones(2, dtype=torch.int32)]
 
@@ -51,6 +55,8 @@ def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     assert builder._device_metadata_enabled is True
     assert builder._device_metadata_tasks == ()
     assert builder.compressor_metadata_buffers is compressor_metadata_buffers
+    assert torch.count_nonzero(compressor_metadata_buffers[0]) == 0
+    assert torch.count_nonzero(compressor_metadata_buffers[1]) == 0
     assert all(torch.count_nonzero(getattr(builder, name)) == 0 for name in tensor_names)
     assert torch.count_nonzero(builder.spec_slot_mapping[0]) == 0
     assert torch.count_nonzero(builder.spec_sas_metadata[0]) == 0
