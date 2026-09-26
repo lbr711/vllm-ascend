@@ -14,7 +14,7 @@ from vllm_ascend.attention.context_parallel.sfa_cp import (
 from vllm_ascend.attention.sfa_v1 import AscendSFAImpl
 
 
-def test_metadata_builder_reset_restores_cold_start_state():
+def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     builder = AscendDSACPMetadataBuilder.__new__(AscendDSACPMetadataBuilder)
     builder.num_decodes = 4
     builder.num_prefills = 3
@@ -48,7 +48,8 @@ def test_metadata_builder_reset_restores_cold_start_state():
     }
     builder._device_metadata_enabled = True
     builder._device_metadata_tasks = (object(),)
-    builder.compressor_metadata_buffers = object()
+    compressor_metadata_buffers = object()
+    builder.compressor_metadata_buffers = compressor_metadata_buffers
     builder.hadamard = None
 
     builder.reset_runtime_state_after_snapshot_restore()
@@ -62,9 +63,9 @@ def test_metadata_builder_reset_restores_cold_start_state():
     assert builder.seq_lens is None
     assert builder.seq_lens_cpu is None
     assert builder.common_ratio_to_sas_metadata == {}
-    assert builder._device_metadata_enabled is False
+    assert builder._device_metadata_enabled is True
     assert builder._device_metadata_tasks == ()
-    assert builder.compressor_metadata_buffers is None
+    assert builder.compressor_metadata_buffers is compressor_metadata_buffers
 
     buffers = [
         builder.start_pos_prefill,

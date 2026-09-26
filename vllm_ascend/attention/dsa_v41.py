@@ -668,7 +668,7 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         return tasks
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
-        """Restore request-scoped metadata buffers to their cold-start state."""
+        """Clear request metadata while preserving feature configuration."""
         self._slot_mapping.fill_(-1)
         self._slot_mapping_2d.fill_(-1)
         for tensor in (
@@ -684,8 +684,6 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         ):
             tensor.zero_()
         self._c2_source_cos.fill_(1)
-        self._c2_full_source_rope = None
-        self._device_metadata_enabled = False
         self._device_metadata_tasks = ()
 
     def _publish_task(

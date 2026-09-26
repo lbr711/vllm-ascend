@@ -711,7 +711,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.compressor_metadata_buffers: CompressorMetadataOutput | None = None
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
-        """Clear reusable DSA request metadata after restore."""
+        """Clear DSA request metadata while preserving feature configuration."""
         self.num_decodes = 0
         self.num_prefills = 0
         self.num_decode_tokens = 0
@@ -719,9 +719,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.num_actual_tokens = None
         self.block_table = None
         self.seq_lens = None
-        self._device_metadata_enabled = False
         self._device_metadata_tasks = ()
-        self.compressor_metadata_buffers = None
 
         if self.common_ratio_to_sas_metadata is not None:
             self.common_ratio_to_sas_metadata.clear()

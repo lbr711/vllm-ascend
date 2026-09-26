@@ -4,7 +4,7 @@ from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
 from vllm_ascend.attention.dsa_v41 import AscendDSAV41MetadataBuilder
 
 
-def test_metadata_builder_reset_restores_cold_start_state():
+def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
     builder = AscendDSAMetadataBuilder.__new__(AscendDSAMetadataBuilder)
     builder.num_decodes = 4
     builder.num_prefills = 3
@@ -16,7 +16,8 @@ def test_metadata_builder_reset_restores_cold_start_state():
     builder.common_ratio_to_sas_metadata = {"stale": object()}
     builder._device_metadata_enabled = True
     builder._device_metadata_tasks = (object(),)
-    builder.compressor_metadata_buffers = object()
+    compressor_metadata_buffers = object()
+    builder.compressor_metadata_buffers = compressor_metadata_buffers
     builder.hadamard = None
     builder.dspark_swa_indices_buffer = torch.ones(2, dtype=torch.int32)
 
@@ -47,16 +48,16 @@ def test_metadata_builder_reset_restores_cold_start_state():
     assert builder.block_table is None
     assert builder.seq_lens is None
     assert builder.common_ratio_to_sas_metadata == {}
-    assert builder._device_metadata_enabled is False
+    assert builder._device_metadata_enabled is True
     assert builder._device_metadata_tasks == ()
-    assert builder.compressor_metadata_buffers is None
+    assert builder.compressor_metadata_buffers is compressor_metadata_buffers
     assert all(torch.count_nonzero(getattr(builder, name)) == 0 for name in tensor_names)
     assert torch.count_nonzero(builder.spec_slot_mapping[0]) == 0
     assert torch.count_nonzero(builder.spec_sas_metadata[0]) == 0
     assert torch.count_nonzero(builder.dspark_swa_indices_buffer) == 0
 
 
-def test_v41_metadata_builder_reset_restores_cold_start_state():
+def test_v41_metadata_builder_reset_clears_requests_and_preserves_configuration():
     builder = AscendDSAV41MetadataBuilder.__new__(AscendDSAV41MetadataBuilder)
     builder._slot_mapping = torch.ones(4, dtype=torch.int64)
     builder._slot_mapping_2d = torch.ones((4, 2), dtype=torch.int32)
@@ -74,7 +75,8 @@ def test_v41_metadata_builder_reset_restores_cold_start_state():
     for name in zeroed_names:
         setattr(builder, name, torch.ones(4, dtype=torch.int32))
     builder._c2_source_cos = torch.zeros(4)
-    builder._c2_full_source_rope = (torch.ones(1), torch.ones(1))
+    c2_full_source_rope = (torch.ones(1), torch.ones(1))
+    builder._c2_full_source_rope = c2_full_source_rope
     builder._device_metadata_enabled = True
     builder._device_metadata_tasks = (object(),)
 
@@ -84,6 +86,6 @@ def test_v41_metadata_builder_reset_restores_cold_start_state():
     assert torch.all(builder._slot_mapping_2d == -1)
     assert all(torch.count_nonzero(getattr(builder, name)) == 0 for name in zeroed_names)
     assert torch.all(builder._c2_source_cos == 1)
-    assert builder._c2_full_source_rope is None
-    assert builder._device_metadata_enabled is False
+    assert builder._c2_full_source_rope is c2_full_source_rope
+    assert builder._device_metadata_enabled is True
     assert builder._device_metadata_tasks == ()
