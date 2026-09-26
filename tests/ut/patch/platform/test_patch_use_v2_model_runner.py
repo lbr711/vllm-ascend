@@ -9,6 +9,14 @@ from vllm_ascend.patch.platform import patch_use_v2_model_runner
 from vllm_ascend.utils import vllm_version_is
 
 
+def test_snapshot_uses_v2_model_runner(monkeypatch):
+    monkeypatch.setattr(patch_use_v2_model_runner.envs, "VLLM_USE_V2_MODEL_RUNNER", False)
+
+    config = type("Config", (), {"snapshot_config": object()})()
+
+    assert patch_use_v2_model_runner._patched_use_v2_model_runner(config)
+
+
 def test_ascend_v1_supported_features_are_not_rejected(monkeypatch):
     monkeypatch.setattr(
         patch_use_v2_model_runner,
