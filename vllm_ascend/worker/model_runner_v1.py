@@ -2190,6 +2190,104 @@ class NPUModelRunner(GPUModelRunner):
         )
         return cut_tokens
 
+    def _log_snapshot_forward_trace(
+        self,
+        scheduler_output: "SchedulerOutput",
+        num_scheduled_tokens: np.ndarray,
+        num_tokens_unpadded: int,
+        num_tokens_padded: int,
+        num_tokens_across_dp: torch.Tensor | None,
+        cudagraph_mode: CUDAGraphMode,
+    ) -> None:
+        """Log host-side inputs that select long-prompt execution paths.
+
+        This is called only from the real request path. Graph warmup and capture
+        use ``_dummy_run`` and therefore cannot enter this trace. All inspected
+        tensors are CPU tensors; the trace must not introduce an NPU-to-host
+        synchronization into model execution.
+        """
+        if self.vllm_config.snapshot_config is None:
+            return
+
+        num_reqs = self.input_batch.num_reqs
+        req_ids = self.input_batch.req_ids[:num_reqs]
+        computed_tokens = self.input_batch.num_computed_tokens_cpu[:num_reqs]
+        prompt_tokens = self.input_batch.num_prompt_tokens[:num_reqs]
+        request_phases = []
+        for req_id, computed, scheduled, prompt in zip(
+            req_ids,
+            computed_tokens,
+            num_scheduled_tokens,
+            prompt_tokens,
+        ):
+            computed = int(computed)
+            scheduled = int(scheduled)
+            prompt = int(prompt)
+            if computed >= prompt:
+                phase = "decode"
+            elif computed + scheduled < prompt:
+                phase = "chunked_prefill"
+            else:
+                phase = "prefill_last_chunk"
+            request_phases.append(
+                (req_id, phase, computed, scheduled, prompt)
+            )
+
+        # The precision issue is specific to prompt processing. Avoid one INFO
+        # record per decode step during long generations.
+        if all(phase == "decode" for _, phase, _, _, _ in request_phases):
+            return
+
+        if num_tokens_across_dp is None:
+            dp_tokens = None
+            moe_tokens = num_tokens_padded
+        else:
+            assert num_tokens_across_dp.device.type == "cpu", (
+                "Snapshot trace must not read an NPU tensor"
+            )
+            dp_tokens = tuple(int(value) for value in num_tokens_across_dp.tolist())
+            moe_tokens = max(dp_tokens)
+
+        moe_comm_type = select_moe_comm_method(moe_tokens, self.vllm_config)
+        new_block_counts = {
+            request.req_id: tuple(len(group) for group in request.block_ids)
+            for request in scheduler_output.scheduled_new_reqs
+        }
+        cached_block_counts = {
+            req_id: (
+                None
+                if block_ids is None
+                else tuple(len(group) for group in block_ids)
+            )
+            for req_id, block_ids in zip(
+                scheduler_output.scheduled_cached_reqs.req_ids,
+                scheduler_output.scheduled_cached_reqs.new_block_ids,
+            )
+        }
+        spec_token_counts = {
+            req_id: len(token_ids)
+            for req_id, token_ids in scheduler_output.scheduled_spec_decode_tokens.items()
+        }
+        logger.info(
+            "[snapshot][trace][model-runner-v1] forward: requests=%s "
+            "attention_state=%s tokens_unpadded=%d tokens_padded=%d "
+            "tokens_across_dp=%s cudagraph_mode=%s moe_tokens=%d "
+            "moe_comm=%s mc2_capacity=%s spec_token_counts=%s "
+            "new_block_counts=%s cached_new_block_counts=%s",
+            request_phases,
+            None if self.attn_state is None else self.attn_state.name,
+            num_tokens_unpadded,
+            num_tokens_padded,
+            dp_tokens,
+            cudagraph_mode.name,
+            moe_tokens,
+            None if moe_comm_type is None else moe_comm_type.name,
+            get_mc2_tokens_capacity(),
+            spec_token_counts,
+            new_block_counts,
+            cached_block_counts,
+        )
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -2493,6 +2591,15 @@ class NPUModelRunner(GPUModelRunner):
 
             # update global cos, sin
             update_cos_sin(positions)
+
+        self._log_snapshot_forward_trace(
+            scheduler_output,
+            num_scheduled_tokens_np,
+            num_tokens_unpadded,
+            num_tokens_padded,
+            num_tokens_across_dp,
+            cudagraph_mode,
+        )
 
         if self.kvpp.scheduler is not None:
             self.kvpp.prepare_forward(bool(np.any(self.input_batch.num_computed_tokens_cpu[:num_reqs] > 0)))
@@ -2896,6 +3003,22 @@ class NPUModelRunner(GPUModelRunner):
             cudagraph_stats=cudagraph_stats,
             routed_experts=None,
         )
+        if (
+            self.vllm_config.snapshot_config is not None
+            and valid_sampled_token_ids
+            and self.attn_state
+            not in {
+                AscendAttentionState.DecodeOnly,
+                AscendAttentionState.SpecDecoding,
+            }
+        ):
+            logger.info(
+                "[snapshot][trace][model-runner-v1] sample: req_ids=%s "
+                "sampled_token_counts=%s sampled_token_ids=%s",
+                req_ids_output_copy,
+                tuple(len(token_ids) for token_ids in valid_sampled_token_ids),
+                valid_sampled_token_ids,
+            )
         if self.dynamic_eplb:
             self.eplb_updator.forward_end(self.eplb_heat_collection_status)
 
