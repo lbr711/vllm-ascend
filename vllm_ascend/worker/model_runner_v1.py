@@ -166,6 +166,7 @@ from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.ops.triton.spec_decode.ngram import triton_ngram_spec_decode
 from vllm_ascend.quantization.utils import enable_fa_quant
 from vllm_ascend.sample.sampler import AscendSampler
+from vllm_ascend.snapshot.layer_trace import SnapshotLayerTrace
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
@@ -196,6 +197,7 @@ from vllm_ascend.utils import (
     get_kv_cache_tensor_layers,
     global_stream,
     is_hidden_state_cache_spec,
+    is_restore,
     is_score_encoder_cache_manager,
     kv_cache_spec_uses_sparse_sfa_c8,
     kv_transfer_supports_shared_backing,
@@ -2288,6 +2290,46 @@ class NPUModelRunner(GPUModelRunner):
             cached_block_counts,
         )
 
+    def _start_snapshot_layer_trace(
+        self,
+        num_scheduled_tokens: np.ndarray,
+    ) -> tuple[SnapshotLayerTrace, str, int, tuple[str, ...]] | None:
+        """Start layer summaries for a real prompt-processing request."""
+        if self.vllm_config.snapshot_config is None:
+            return None
+
+        num_reqs = self.input_batch.num_reqs
+        computed_tokens = self.input_batch.num_computed_tokens_cpu[:num_reqs]
+        prompt_tokens = self.input_batch.num_prompt_tokens[:num_reqs]
+        if not any(
+            int(computed) < int(prompt) and int(scheduled) > 0
+            for computed, scheduled, prompt in zip(
+                computed_tokens,
+                num_scheduled_tokens,
+                prompt_tokens,
+            )
+        ):
+            return None
+
+        layer_trace = self._snapshot_layer_trace
+        if not layer_trace.available:
+            return None
+
+        self._snapshot_layer_trace_id += 1
+        phase = "restore" if is_restore() else "cold"
+        trace_id = self._snapshot_layer_trace_id
+        request_ids = tuple(self.input_batch.req_ids[:num_reqs])
+        layer_trace.begin(self.device)
+        logger.info(
+            "[snapshot][trace][layer] phase=%s trace_id=%d requests=%s started; "
+            "summary_fields=(numel,num_samples,sum,abs_sum,square_sum,min,max,"
+            "anchor_0,anchor_1,anchor_2,anchor_3), sampling=uniform",
+            phase,
+            trace_id,
+            request_ids,
+        )
+        return layer_trace, phase, trace_id, request_ids
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -2600,6 +2642,9 @@ class NPUModelRunner(GPUModelRunner):
             num_tokens_across_dp,
             cudagraph_mode,
         )
+        snapshot_layer_trace = self._start_snapshot_layer_trace(
+            num_scheduled_tokens_np
+        )
 
         if self.kvpp.scheduler is not None:
             self.kvpp.prepare_forward(bool(np.any(self.input_batch.num_computed_tokens_cpu[:num_reqs] > 0)))
@@ -2677,6 +2722,9 @@ class NPUModelRunner(GPUModelRunner):
                 mamba_copy_connector.finish_mamba_state_copy()
         if active_device_metadata_executor is not None and active_device_metadata_executor.submission_in_flight:
             active_device_metadata_executor.release()
+        if snapshot_layer_trace is not None:
+            layer_trace, phase, trace_id, request_ids = snapshot_layer_trace
+            layer_trace.log(phase, trace_id, request_ids)
         self.kvpp.complete_forward()
 
         with record_function_or_nullcontext("post process"):
@@ -4574,6 +4622,17 @@ class NPUModelRunner(GPUModelRunner):
         logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))
 
         get_offloader().post_init()
+
+        # Register before torch.compile and ACL Graph wrapping. The hooks are
+        # inactive during warmup/capture because no summary buffer exists.
+        if self.vllm_config.snapshot_config is not None:
+            self._snapshot_layer_trace = SnapshotLayerTrace(self.model)
+            self._snapshot_layer_trace_id = 0
+            if not self._snapshot_layer_trace.available:
+                logger.warning(
+                    "[snapshot][trace][layer] no decoder layers were found; "
+                    "per-layer summaries are unavailable"
+                )
 
         mm_config = self.model_config.multimodal_config
         self.is_multimodal_pruning_enabled = (
