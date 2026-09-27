@@ -213,21 +213,22 @@ def test_reset_v1_input_runtime_state():
 
 
 def test_reset_v1_block_tables():
-    buffers = [
-        SimpleNamespace(gpu=torch.ones(2), cpu=torch.ones(2)),
-        SimpleNamespace(gpu=torch.ones(3), cpu=torch.ones(3)),
+    block_tables = MagicMock()
+    block_tables.block_tables = [
+        SimpleNamespace(
+            block_table=SimpleNamespace(gpu=torch.ones(2), cpu=torch.ones(2)),
+            slot_mapping=SimpleNamespace(gpu=torch.ones(2), cpu=torch.ones(2)),
+        ),
+        SimpleNamespace(
+            block_table=SimpleNamespace(gpu=torch.ones(3), cpu=torch.ones(3)),
+            slot_mapping=SimpleNamespace(gpu=torch.ones(3), cpu=torch.ones(3)),
+        ),
     ]
-    runner = SimpleNamespace(
-        input_batch=SimpleNamespace(
-            block_table=SimpleNamespace(block_tables=[SimpleNamespace(block_table=buffer) for buffer in buffers])
-        )
-    )
+    runner = SimpleNamespace(input_batch=SimpleNamespace(block_table=block_tables))
 
     _reset_v1_block_tables(runner)
 
-    for buffer in buffers:
-        assert torch.count_nonzero(buffer.gpu) == 0
-        assert torch.count_nonzero(buffer.cpu) == 0
+    block_tables.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
 
 
 def test_rebuild_v1_native_resources_preserves_device_metadata_executor():

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 
 import torch
@@ -14,6 +15,8 @@ from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     reset_modules_runtime_state,
     restore_state_dict,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _restore_model_checkpoint(runner, model: nn.Module, model_save_path: str, label: str) -> None:
@@ -320,9 +323,18 @@ def _reset_v1_input_runtime_state(runner) -> None:
 
 
 def _reset_v1_block_tables(runner) -> None:
-    for block_table in runner.input_batch.block_table.block_tables:
-        block_table.block_table.gpu.zero_()
-        block_table.block_table.cpu.zero_()
+    block_tables = runner.input_batch.block_table
+    block_tables.reset_runtime_state_after_snapshot_restore()
+    for group_id, block_table in enumerate(block_tables.block_tables):
+        logger.info(
+            "[snapshot][block-table] reset V1 group=%d block_table_ptr=%#x "
+            "block_table_shape=%s slot_mapping_ptr=%#x slot_mapping_shape=%s",
+            group_id,
+            block_table.block_table.gpu.data_ptr(),
+            tuple(block_table.block_table.gpu.shape),
+            block_table.slot_mapping.gpu.data_ptr(),
+            tuple(block_table.slot_mapping.gpu.shape),
+        )
 
 
 def _reset_target_and_drafter_modules_after_restore(runner) -> None:

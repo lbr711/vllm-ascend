@@ -419,34 +419,52 @@ class MultiGroupBlockTable:
             block_table.dcp_world_size == 1 for block_table in active_block_tables
         )
         if self._can_fuse_slot_mapping:
-            self._fused_slot_mapping_group_count = len(active_block_tables)
-            self._fused_max_num_batched_tokens = active_block_tables[0].max_num_batched_tokens
-            self._fused_block_table_addrs = torch.tensor(
-                [block_table.block_table.gpu.data_ptr() for block_table in active_block_tables],
-                dtype=torch.uint64,
-                device=device,
-            )
-            self._fused_slot_mapping_addrs = torch.tensor(
-                [block_table.slot_mapping.gpu.data_ptr() for block_table in active_block_tables],
-                dtype=torch.uint64,
-                device=device,
-            )
-            self._fused_block_table_strides = torch.tensor(
-                [block_table.block_table.gpu.stride(0) for block_table in active_block_tables],
-                dtype=torch.int64,
-                device=device,
-            )
-            self._fused_block_sizes = torch.tensor(
-                [block_table.block_size for block_table in active_block_tables],
-                dtype=torch.int32,
-                device=device,
-            )
-            self._fused_is_circular = torch.tensor(
-                [block_table.is_circular for block_table in active_block_tables],
-                dtype=torch.int32,
-                device=device,
-            )
-            self._fused_min_block_size = min(block_table.block_size for block_table in active_block_tables)
+            self._init_fused_slot_mapping_metadata(active_block_tables, device)
+
+    def _init_fused_slot_mapping_metadata(self, active_block_tables, device) -> None:
+        self._fused_slot_mapping_group_count = len(active_block_tables)
+        self._fused_max_num_batched_tokens = active_block_tables[0].max_num_batched_tokens
+        self._fused_block_table_addrs = torch.tensor(
+            [block_table.block_table.gpu.data_ptr() for block_table in active_block_tables],
+            dtype=torch.uint64,
+            device=device,
+        )
+        self._fused_slot_mapping_addrs = torch.tensor(
+            [block_table.slot_mapping.gpu.data_ptr() for block_table in active_block_tables],
+            dtype=torch.uint64,
+            device=device,
+        )
+        self._fused_block_table_strides = torch.tensor(
+            [block_table.block_table.gpu.stride(0) for block_table in active_block_tables],
+            dtype=torch.int64,
+            device=device,
+        )
+        self._fused_block_sizes = torch.tensor(
+            [block_table.block_size for block_table in active_block_tables],
+            dtype=torch.int32,
+            device=device,
+        )
+        self._fused_is_circular = torch.tensor(
+            [block_table.is_circular for block_table in active_block_tables],
+            dtype=torch.int32,
+            device=device,
+        )
+        self._fused_min_block_size = min(block_table.block_size for block_table in active_block_tables)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        """Reset request state and rebuild device-side block-table metadata."""
+        active_block_tables = []
+        for block_table in self.block_tables:
+            block_table.block_table.gpu.zero_()
+            block_table.block_table.cpu.zero_()
+            block_table.num_blocks_per_row.fill(0)
+            block_table.slot_mapping.gpu.fill_(PAD_SLOT_ID)
+            block_table.slot_mapping.cpu.fill_(PAD_SLOT_ID)
+            if not block_table.is_mamba_group:
+                active_block_tables.append(block_table)
+
+        if self._can_fuse_slot_mapping:
+            self._init_fused_slot_mapping_metadata(active_block_tables, self.block_tables[0].device)
 
     def append_row(self, block_ids: tuple[list[int], ...], row_idx: int) -> None:
         for i, block_table in enumerate(self.block_tables):
