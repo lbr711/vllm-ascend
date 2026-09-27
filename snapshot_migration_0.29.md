@@ -11,6 +11,38 @@ The Ascend branch reuses the previous migration work on the same Ascend base,
 then adapts it to vLLM 0.29. The old deployment branches are unchanged.
 Snapshot creation requires an idle service; this is not in-flight request migration.
 
+## Current hardware investigations
+
+Status recorded on 2026-09-27. Keep the following two failures separate; they
+occur at different stages and do not currently share a confirmed root cause.
+
+### DeepSeek V4
+
+- Failure stage: snapshot restore itself fails before restored inference can be
+  validated.
+- Confirmed immediate error: the stream used by the failing operation is not
+  registered with an allocator.
+- Current instrumentation: ERROR-level diagnostics have been added to the
+  runtime implementation to trace stream and allocator restoration.
+- Next action: collect the instrumented runtime logs and use them to determine
+  where the stream-to-allocator registration is lost during restore.
+
+### GLM-5.2
+
+- Failure stage: snapshot restore completes, but inference accuracy is abnormal
+  after restore.
+- Current status: the first divergent model layer has not yet been identified;
+  previous suspected execution paths remain hypotheses rather than confirmed
+  causes.
+- Diagnostic branch: `snapshot_0.29.0_a71b766ce` (the Ascend base commit is
+  `a71b766ce6fc0a9669a412e15a5cf53f7f827093`).
+- Diagnostic commit: `119c217b0` adds request-correlated input/output summaries
+  for every local transformer layer while avoiding per-layer D2H copies and
+  warmup/decode log output.
+- Next action: rerun the same deterministic long-prompt request before and after
+  restore on the same DP, then compare layer summaries to locate the first
+  numerical divergence.
+
 ## Changes that affect restoration
 
 | Area | New structure and adaptation |
