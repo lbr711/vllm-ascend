@@ -112,6 +112,10 @@ class AscendIndexerKPoolMetadataBuilder(AttentionMetadataBuilder):
             tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         ] = {}
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        # Recapture rebuilds per-draft-step buffers using the restored slot mappings.
+        self._metadata_buffers.clear()
+
     def _get_metadata_buffers(
         self, common_attn_metadata: CommonAttentionMetadata
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -429,6 +433,13 @@ class Glm5NextKPoolIndexerBackend(nn.Module):
         self._gate_weight_f32 = self.index_kpool_compress_gate.detach().float()
         self._norm_weight_f32 = self.k_norm.weight.detach().float() if self.k_norm.weight is not None else None
         self._norm_bias_f32 = self.k_norm.bias.detach().float() if self.k_norm.bias is not None else None
+
+    def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
+        self.process_weights_after_loading()
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        if self.topk_indices_buffer is not None:
+            self.topk_indices_buffer.fill_(-1)
 
     @staticmethod
     def _bound_cache(layer: Any) -> torch.Tensor:

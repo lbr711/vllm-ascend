@@ -472,7 +472,10 @@ _kv_utils_pkg = _make_pkg(
     os.path.join(_kv_transfer_real_path, "utils"),
 )
 sys.modules["vllm_ascend.distributed.kv_transfer.utils"] = _kv_utils_pkg
-sys.modules["vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine"] = MagicMock()
+if _MOCK_VLLM_DEPS:
+    sys.modules["vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine"] = MagicMock()
+else:
+    importlib.import_module("vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine")
 
 _kv_pool_pkg = _make_pkg(
     "vllm_ascend.distributed.kv_transfer.kv_pool",

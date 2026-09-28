@@ -223,6 +223,13 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
             hadamard = torch.tensor(scipy.linalg.hadamard(128), dtype=torch.bfloat16, device="npu")
             self.k_hadamard = hadamard / (128**0.5)
 
+    def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
+        if not self.enable_sparse_li_c8:
+            return
+        self.q_hadamard = None
+        self.k_hadamard = None
+        self.process_weights_after_loading()
+
     @property
     def num_cache_tensors(self) -> int:
         """Number of tensors this indexer's cache occupies in the composed

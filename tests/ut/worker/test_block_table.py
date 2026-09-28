@@ -183,6 +183,55 @@ class TestBlockTableComputeSlotMapping(TestBase):
             np.array([7, 11], dtype=np.int32),
         )
 
+    def test_snapshot_restore_resets_multigroup_runtime_state(self):
+        from vllm_ascend.worker.block_table import MultiGroupBlockTable
+
+        with (
+            patch(
+                "vllm_ascend.worker.block_table.get_dcp_group",
+                return_value=SimpleNamespace(world_size=1, rank_in_group=0),
+            ),
+            patch(
+                "vllm_ascend.worker.block_table.get_decode_context_model_parallel_world_size",
+                return_value=1,
+            ),
+        ):
+            tables = MultiGroupBlockTable(
+                block_sizes=[128, 256],
+                max_num_reqs=2,
+                max_model_len=1024,
+                max_num_batched_tokens=8,
+                pin_memory=False,
+                device=torch.device("cpu"),
+                max_num_blocks=[8, 4],
+            )
+
+        for table in tables.block_tables:
+            table.block_table.gpu.fill_(3)
+            table.block_table.cpu.fill_(3)
+            table.num_blocks_per_row.fill(2)
+            table.slot_mapping.gpu.fill_(3)
+            table.slot_mapping.cpu.fill_(3)
+        tables._fused_block_table_addrs.zero_()
+        tables._fused_slot_mapping_addrs.zero_()
+
+        tables.reset_runtime_state_after_snapshot_restore()
+
+        for table in tables.block_tables:
+            self.assertEqual(torch.count_nonzero(table.block_table.gpu), 0)
+            self.assertEqual(torch.count_nonzero(table.block_table.cpu), 0)
+            self.assertFalse(np.any(table.num_blocks_per_row))
+            self.assertTrue(torch.all(table.slot_mapping.gpu == -1))
+            self.assertTrue(torch.all(table.slot_mapping.cpu == -1))
+        self.assertEqual(
+            tables._fused_block_table_addrs.tolist(),
+            [table.block_table.gpu.data_ptr() for table in tables.block_tables],
+        )
+        self.assertEqual(
+            tables._fused_slot_mapping_addrs.tolist(),
+            [table.slot_mapping.gpu.data_ptr() for table in tables.block_tables],
+        )
+
     def _test_slot_mapping_for_ranks(self, dcp_world_size, cp_kv_cache_interleave_size, test_configs):
         """Helper method to test slot_mapping across multiple ranks
 

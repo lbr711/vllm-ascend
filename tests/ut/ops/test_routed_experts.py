@@ -2,11 +2,34 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM Ascend project
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
 
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts, EplbExpertTensorList
+
+
+@pytest.mark.parametrize("snapshot_enabled", [False, True])
+def test_snapshot_expert_maps_preserve_manager_aliases(snapshot_enabled):
+    layer = AscendRoutedExperts.__new__(AscendRoutedExperts)
+    torch.nn.Module.__init__(layer)
+    mapping = torch.tensor([0, -1, 1, -1], dtype=torch.int32)
+    layer.expert_map_manager = SimpleNamespace(
+        local_num_experts=2,
+        placement_strategy="linear",
+        expert_map=mapping,
+        expert_mask=None,
+        routing_tables=(mapping.clone(), mapping.clone(), mapping.clone()),
+    )
+    with patch(
+        "vllm_ascend.ops.fused_moe.routed_experts.get_current_vllm_config",
+        return_value=SimpleNamespace(snapshot_config=object() if snapshot_enabled else None),
+    ):
+        layer.update_expert_map_info()
+    assert layer._expert_map is mapping
+    assert ("_expert_map" in layer.state_dict()) == snapshot_enabled
+    assert ("expert_global_to_physical" in layer.state_dict()) == snapshot_enabled
 
 
 def _routed_experts(weight_views):

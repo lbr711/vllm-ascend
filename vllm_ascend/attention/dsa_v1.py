@@ -1,3 +1,4 @@
+import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -71,6 +72,8 @@ else:
 # The SAS and QLI metadata operators use a fixed 1024-element int32 layout.
 DSA_METADATA_BUFFER_SIZE = 1024
 CompressorMetadataOutput: TypeAlias = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+
+logger = logging.getLogger(__name__)
 
 _DSV4_DSA_OVERLAP_STREAM = None
 CompressorForwardOutput = tuple[torch.Tensor, torch.Tensor]
@@ -710,6 +713,54 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         # retain [block_idx, block_offset] mappings for paged cache writes.
         self.slot_mapping = torch.zeros(self.slot_mapping_shape, dtype=torch.int32, device=self.device)
         self.compressor_metadata_buffers: CompressorMetadataOutput | None = None
+        self._snapshot_log_next_build = False
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        """Clear DSA request metadata while preserving feature configuration."""
+        self.num_decodes = 0
+        self.num_prefills = 0
+        self.num_decode_tokens = 0
+        self.num_prefill_tokens = 0
+        self.num_actual_tokens = None
+        self.block_table = None
+        self.seq_lens = None
+        self._device_metadata_tasks = ()
+        self._snapshot_log_next_build = True
+
+        if self.compressor_metadata_buffers is not None:
+            for tensor in self.compressor_metadata_buffers[:2]:
+                tensor.zero_()
+
+        if self.common_ratio_to_sas_metadata is not None:
+            self.common_ratio_to_sas_metadata.clear()
+
+        for tensor in (
+            self.start_pos_prefill,
+            self.sas_metadata_buffer,
+            self.qli_metadata_buffer,
+            self.qli_seqused_k,
+            self.qli_cmp_residual_k,
+            self.cu_seqlens_ori_kv,
+            self.cu_seqlens_cmp_kv,
+            self.seqused_q,
+            self._zero_i32,
+            self.slot_mapping,
+        ):
+            tensor.zero_()
+
+        for attr_name in ("spec_slot_mapping", "spec_sas_metadata"):
+            tensors = getattr(self, attr_name, None)
+            if tensors is not None:
+                for tensor in tensors:
+                    tensor.zero_()
+        if self.dspark_swa_indices_buffer is not None:
+            self.dspark_swa_indices_buffer.zero_()
+        if self.hadamard is not None:
+            from scipy.linalg import hadamard  # type: ignore[import-untyped]
+
+            dim = self.hadamard.shape[0]
+            restored = torch.tensor(hadamard(dim, dtype=float), dtype=torch.float, device=self.device)
+            self.hadamard.copy_(restored.to(torch.bfloat16))
 
     def _init_hadamard(self, layer_names: list[str]) -> None:
         hf_config = self.model_config.hf_config
@@ -1243,6 +1294,27 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             qli_cu_seqlens_q = query_start_loc
             qli_seqused_k = self.qli_seqused_k[:num_reqs]
             qli_cmp_residual_k = self.qli_cmp_residual_k[:num_reqs]
+
+        if self._snapshot_log_next_build:
+            block_capacity = self.block_table.shape[1] * self.storage_block_size
+            log = logger.error if max_seqlen_kv > block_capacity else logger.info
+            log(
+                "[snapshot][block-table] DSA restore build cache_group=%s "
+                "block_table_ptr=%#x block_table_shape=%s storage_block_size=%d "
+                "capacity_tokens=%d max_seqlen_kv=%d num_reqs=%d "
+                "num_actual_reqs=%d sas_metadata_ptr=%#x sas_metadata_shape=%s",
+                self.cache_group_key,
+                self.block_table.data_ptr(),
+                tuple(self.block_table.shape),
+                self.storage_block_size,
+                block_capacity,
+                max_seqlen_kv,
+                num_reqs,
+                num_actual_reqs,
+                sas_metadata.data_ptr(),
+                tuple(sas_metadata.shape),
+            )
+            self._snapshot_log_next_build = False
 
         req_metadata = AscendDSAReqMetadata(
             block_table=self.block_table[:num_reqs, ...],

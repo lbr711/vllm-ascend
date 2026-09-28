@@ -340,6 +340,60 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.slot_mapping = torch.zeros(self.slot_mapping_shape, dtype=torch.int32, device=self.device)
         self.compressor_metadata_buffers: dsa_v1.CompressorMetadataOutput | None = None
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        """Clear DSA-CP request metadata while preserving feature configuration."""
+        self.num_decodes = 0
+        self.num_prefills = 0
+        self.num_decode_tokens = 0
+        self.num_prefill_tokens = 0
+        self.num_actual_tokens = None
+        self.block_table = None
+        self.seq_lens = None
+        self.seq_lens_cpu = None
+        self._device_metadata_tasks = ()
+
+        if self.compressor_metadata_buffers is not None:
+            for tensor in self.compressor_metadata_buffers[:2]:
+                tensor.zero_()
+
+        metadata_cache = getattr(self, "common_ratio_to_sas_metadata", None)
+        if metadata_cache is not None:
+            metadata_cache.clear()
+
+        for tensor in (
+            self.start_pos_prefill,
+            self.req_sas_metadata,
+            self.req_qli_metadata,
+            self.qli_seqused_k,
+            self.qli_cmp_residual_k,
+            self.cu_seqlens_ori_kv,
+            self.cu_seqlens_cmp_kv,
+            self.seqused_q,
+            self._zero_i32,
+            self.local_query_start_loc,
+            self.local_seq_lens,
+            self.slot_mapping,
+        ):
+            tensor.zero_()
+
+        for attr_name in (
+            "spec_slot_mapping",
+            "spec_local_query_start_loc",
+            "spec_local_seq_lens",
+            "spec_sas_metadata",
+            "spec_start_pos",
+        ):
+            tensors = getattr(self, attr_name, None)
+            if tensors is not None:
+                for tensor in tensors:
+                    tensor.zero_()
+        if self.hadamard is not None:
+            from scipy.linalg import hadamard  # type: ignore[import-untyped]
+
+            dim = self.hadamard.shape[0]
+            restored = torch.tensor(hadamard(dim, dtype=float), dtype=torch.float, device=self.device)
+            self.hadamard.copy_(restored.to(torch.bfloat16))
+
     @classmethod
     def get_cudagraph_support(
         cls: type["AscendDSACPMetadataBuilder"],
@@ -1491,6 +1545,12 @@ class AscendDSACPImpl(AttentionImplBase[Any]):
             self.compressor_wgate = self.compressor.wgate
             self.compressor_norm = self.compressor.norm
             self.compressor_norm_eps = self.compressor.norm_eps
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.tp_group = get_tp_group()
+        self.tp_size = self.tp_group.world_size
+        self.tp_rank = self.tp_group.rank_in_group
+        self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(self.tp_group)
 
     def _get_layer_metadata(
         self,
