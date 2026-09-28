@@ -9,6 +9,7 @@ from vllm.third_party.flash_linear_attention.ops.kda import FusedRMSNormGated
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops import layernorm as ascend_layernorm
 from vllm_ascend.ops.layernorm import AscendFusedRMSNormGated
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import reset_modules_runtime_state
 from vllm_ascend.utils import enable_custom_op
 
 enable_custom_op()
@@ -73,6 +74,28 @@ def test_RMSNorm_supports_quant_config_without_quant_description(default_vllm_co
     layer = RMSNorm(hidden_size=8, eps=1e-05)
 
     assert layer.bias is None
+
+
+@pytest.mark.parametrize("has_weight", [False, True])
+def test_RMSNorm_snapshot_reset_preserves_storage_and_learned_weights(default_vllm_config, has_weight):
+    default_vllm_config.quant_config = None
+    layer = RMSNorm(hidden_size=8, eps=1e-05, has_weight=has_weight)
+    model = torch.nn.Sequential(layer)
+    weight = layer.weight
+    address = weight.data_ptr()
+    assert ("weight" in layer.state_dict()) is has_weight
+    torch.testing.assert_close(weight, torch.ones_like(weight))
+
+    with torch.no_grad():
+        weight.fill_(2 if has_weight else 0)
+
+    # Exercise the same module traversal used by resume, including repeated resets.
+    for _ in range(2):
+        assert reset_modules_runtime_state((model,)) == 1
+        assert layer.weight is weight
+        assert layer.weight.data_ptr() == address
+        torch.testing.assert_close(weight, torch.full_like(weight, 2 if has_weight else 1))
+        assert ("weight" in layer.state_dict()) is has_weight
 
 
 def test_RMSNorm_creates_bias_from_quant_description(default_vllm_config):
