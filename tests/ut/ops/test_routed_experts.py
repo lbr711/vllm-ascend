@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts, EplbExpertTensorList
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import restore_state_dict
 
 
 @pytest.mark.parametrize("snapshot_enabled", [False, True])
@@ -98,6 +99,7 @@ def test_get_expert_weights_rejects_non_contiguous_view():
 @pytest.mark.parametrize("use_v2_model_runner", [False, True])
 def test_ascend_expert_map_follows_model_runner(use_v2_model_runner):
     routed_experts = AscendRoutedExperts.__new__(AscendRoutedExperts)
+    torch.nn.Module.__init__(routed_experts)
     legacy_map = torch.tensor([1, 0], dtype=torch.int32)
     upstream_map = torch.tensor([0, 1], dtype=torch.int32)
     object.__setattr__(routed_experts, "_use_v2_model_runner", use_v2_model_runner)
@@ -113,6 +115,7 @@ def test_ascend_expert_map_follows_model_runner(use_v2_model_runner):
 
 def test_update_expert_map_preserves_upstream_and_legacy_contracts(monkeypatch):
     routed_experts = AscendRoutedExperts.__new__(AscendRoutedExperts)
+    torch.nn.Module.__init__(routed_experts)
     parent_update_calls = []
 
     def parent_update(instance):
@@ -131,3 +134,82 @@ def test_update_expert_map_preserves_upstream_and_legacy_contracts(monkeypatch):
 
     assert routed_experts.ascend_expert_map is legacy_map
     assert expert_map_manager._expert_map is legacy_map
+
+
+@pytest.mark.parametrize("snapshot_enabled", [False, True])
+@pytest.mark.parametrize("has_map", [False, True])
+def test_v1_execution_map_checkpoint_round_trip(snapshot_enabled, has_map, tmp_path):
+    layer = AscendRoutedExperts.__new__(AscendRoutedExperts)
+    torch.nn.Module.__init__(layer)
+    layer._use_v2_model_runner = False
+    layer.mix_placement = False
+    layer.moe_config = SimpleNamespace(num_experts=4, num_logical_experts=4, num_local_experts=2, ep_size=2)
+    mapping = torch.tensor([-1, -1, 0, 1], dtype=torch.int32) if has_map else None
+    expected = mapping.clone() if has_map else None
+    layer.expert_map_manager = SimpleNamespace(_expert_map=None)
+    config = SimpleNamespace(
+        snapshot_config=object() if snapshot_enabled else None,
+        parallel_config=SimpleNamespace(tensor_parallel_size=1),
+    )
+    eplb = SimpleNamespace(
+        num_redundant_experts=0, dynamic_eplb=False, eplb_policy_type=0, expert_heat_collection_interval=1
+    )
+    prefix = "vllm_ascend.ops.fused_moe.routed_experts"
+    with patch(prefix + ".get_current_vllm_config", return_value=config), patch(
+        prefix + ".get_ascend_config", return_value=SimpleNamespace(eplb_config=eplb)
+    ), patch(prefix + ".make_eplb_placement_config", return_value=eplb), patch(
+        prefix + ".init_eplb_config", return_value=(None, mapping, None, 0)
+    ), patch(prefix + ".use_multistage_eplb_load", return_value=False), patch(
+        prefix + ".VllmEplbAdaptor.register_layer"
+    ), patch.object(torch.Tensor, "npu", lambda tensor: tensor, create=True):
+        layer.init_eplb(0)
+    assert layer.ascend_expert_map is mapping
+    assert ("_ascend_expert_map" in layer._buffers) == snapshot_enabled
+    assert ("_ascend_expert_map" in layer.state_dict()) == (snapshot_enabled and has_map)
+    if snapshot_enabled and has_map:
+        path = tmp_path / "map.pth"
+        torch.save(layer.state_dict(), path)
+        address = mapping.data_ptr()
+        for _ in range(2):
+            mapping.zero_()
+            restore_state_dict(layer, str(path), "model")
+            assert layer.ascend_expert_map is mapping
+            assert mapping.data_ptr() == address
+            torch.testing.assert_close(mapping, expected)
+        replacement = expected.clone()
+        layer.update_expert_map(replacement)
+        assert layer.ascend_expert_map is replacement
+        assert layer._buffers["_ascend_expert_map"] is replacement
+        assert "_ascend_expert_map" not in layer.__dict__
+        assert layer.expert_map_manager._expert_map is replacement
+
+
+def test_v2_execution_map_checkpoint_preserves_manager_aliases(tmp_path):
+    layer = AscendRoutedExperts.__new__(AscendRoutedExperts)
+    torch.nn.Module.__init__(layer)
+    layer._use_v2_model_runner = True
+    layer.quant_method = SimpleNamespace(moe_kernel=None)
+    mapping = torch.tensor([0, 1, -1, -1], dtype=torch.int32)
+    tables = tuple(torch.arange(4, dtype=torch.int32) for _ in range(3))
+    layer.expert_map_manager = SimpleNamespace(
+        local_num_experts=2, placement_strategy="linear", expert_map=mapping, expert_mask=None, routing_tables=tables
+    )
+    with patch(
+        "vllm_ascend.ops.fused_moe.routed_experts.get_current_vllm_config",
+        return_value=SimpleNamespace(snapshot_config=object()),
+    ):
+        layer.update_expert_map_info()
+    path = tmp_path / "v2_map.pth"
+    torch.save(layer.state_dict(), path)
+    for _ in range(2):
+        mapping.zero_()
+        for table in tables:
+            table.zero_()
+        restore_state_dict(layer, str(path), "model")
+        assert layer.ascend_expert_map is layer.expert_map_manager.expert_map
+        torch.testing.assert_close(layer.ascend_expert_map, torch.tensor([0, 1, -1, -1], dtype=torch.int32))
+        for name, table in zip(
+            ("expert_global_to_physical", "expert_physical_to_global", "expert_local_to_global"), tables
+        ):
+            assert getattr(layer, name) is table
+            torch.testing.assert_close(table, torch.arange(4, dtype=torch.int32))
