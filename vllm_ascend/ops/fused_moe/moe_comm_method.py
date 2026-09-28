@@ -365,6 +365,9 @@ class FusedMC2CommImpl(MoECommMethod):
         )
         return True
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.mega_moe_symm_buffer = None
+
     def _init_mega_moe_symm_buffer(
         self,
         dispatch_quant_mode: int = 0,

@@ -106,6 +106,20 @@ class TestAscendSFAIndexerBackend(TestBase):
         indexer.enable_sparse_li_c8 = True
         self.assertEqual(indexer.num_cache_tensors, 2)
 
+    def test_snapshot_restore_rebuilds_instance_hadamard_buffers(self):
+        indexer = AscendSFAIndexerBackend.__new__(AscendSFAIndexerBackend)
+        nn.Module.__init__(indexer)
+        indexer.enable_sparse_li_c8 = True
+        indexer.register_buffer("q_hadamard", torch.ones(2), persistent=False)
+        indexer.register_buffer("k_hadamard", torch.ones(2), persistent=False)
+
+        with patch.object(indexer, "process_weights_after_loading") as process_weights:
+            indexer.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+
+        self.assertIsNone(indexer.q_hadamard)
+        self.assertIsNone(indexer.k_hadamard)
+        process_weights.assert_called_once_with()
+
     def _make_forward_indexer(self):
         indexer = AscendSFAIndexerBackend.__new__(AscendSFAIndexerBackend)
         indexer.head_dim = 128
