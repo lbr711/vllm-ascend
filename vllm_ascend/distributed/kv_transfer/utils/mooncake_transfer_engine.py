@@ -1,9 +1,12 @@
 import threading
 
+from vllm.logger import logger
+
 
 class GlobalTE:
     def __init__(self):
         self.transfer_engine = None
+        self.hostname: str | None = None
         self.is_register_buffer: bool = False
         self.transfer_engine_lock = threading.Lock()
         self.register_buffer_lock = threading.Lock()
@@ -26,6 +29,7 @@ class GlobalTE:
                     ret_value = self.transfer_engine.initialize(hostname, "P2PHANDSHAKE", "ascend", device_name)
                     if ret_value != 0:
                         raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+                    self.hostname = hostname
         return self.transfer_engine
 
     def register_buffer(self, ptrs: list[int], sizes: list[int]):
@@ -38,6 +42,28 @@ class GlobalTE:
                 if ret_value != 0:
                     raise RuntimeError("Mooncake memory registration failed.")
             self.is_register_buffer = True
+
+    def reset(self):
+        """Drop the cached transfer engine after its memory is unregistered."""
+        with self.transfer_engine_lock:
+            old_engine = self.transfer_engine
+            self.transfer_engine = None
+            self.hostname = None
+        with self.register_buffer_lock:
+            self.is_register_buffer = False
+
+        if old_engine is None:
+            return
+
+        # TransferEngine has no close/finalize API. Drop its last Python
+        # reference and trigger destruction before creating a replacement.
+        try:
+            del old_engine
+            import gc
+
+            gc.collect()
+        except Exception as e:
+            logger.warning("[snapshot] destroy old TransferEngine failed: %s", e)
 
 
 global_te = GlobalTE()

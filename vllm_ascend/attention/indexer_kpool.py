@@ -165,6 +165,10 @@ class AscendIndexerKPoolMetadataBuilder(AttentionMetadataBuilder):
             pool_tail=pool_tail,
         )
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        # Recapture rebuilds per-draft-step buffers using the restored slot mappings.
+        self._metadata_buffers.clear()
+
     def _get_metadata_buffers(self, common_attn_metadata: CommonAttentionMetadata) -> _KPoolMetadataBuffers:
         key = common_attn_metadata.slot_mapping.data_ptr()
         buffers = self._metadata_buffers.get(key)
@@ -544,6 +548,13 @@ class Glm5NextKPoolIndexerBackend(nn.Module):
         self._head_weight_f32 = self.wk_weights_proj.weight[self.head_dim :].detach().float().contiguous()
         self._norm_weight_f32 = self.k_norm.weight.detach().float() if self.k_norm.weight is not None else None
         self._norm_bias_f32 = self.k_norm.bias.detach().float() if self.k_norm.bias is not None else None
+
+    def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
+        self.process_weights_after_loading()
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        if self.topk_indices_buffer is not None:
+            self.topk_indices_buffer.fill_(-1)
 
     @staticmethod
     def _bound_cache(layer: Any) -> torch.Tensor:
