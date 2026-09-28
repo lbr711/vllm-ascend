@@ -536,6 +536,7 @@ class AscendSFAMetadataBuilder(MLACommonMetadataBuilder[AscendSFAMetadata]):
             if state.use_smla:
                 state.metadata_buffer.zero_()
                 state.length_buffer.zero_()
+                state.sinks.fill_(SMLA_DEFAULT_SINK_VALUE)
 
     def _prepare_parallel_metadata(
         self,

@@ -19,6 +19,39 @@ def _weight_switch_config() -> WeightSwitchConfig:
     return WeightSwitchConfig(group=object(), world_size=2, rank=0)
 
 
+@pytest.mark.parametrize("gather_dim", [0, 1, -1])
+def test_snapshot_rebuilds_independent_copies_in_place(gather_dim):
+    class Method(WeightSwitchMixin):
+        supports_weight_switch = True
+        weight_switch_gather_specs = (WeightSwitchGatherSpec("weight", gather_dim),)
+        weight_switch_repeat_specs = (WeightSwitchRepeatSpec("scale"),)
+
+    layer = torch.nn.Module()
+    layer.weight = torch.nn.Parameter(torch.arange(6.).reshape(2, 3), requires_grad=False)
+    layer.scale = torch.nn.Parameter(torch.tensor([2., 3.]), requires_grad=False)
+    config = WeightSwitchConfig(object(), 2, 0, shard_axis="input")
+    method = Method()
+    state = method.enable_weight_switch(layer, config)
+    saved = {name: tensor.clone() for name, tensor in layer.state_dict().items()}
+    gather = state.gather_parts["weight"]
+    repeat = state.repeat_parts["scale"]
+    addresses = (gather.gather_input.data_ptr(), repeat.full_tensor.data_ptr())
+    for _ in range(2):
+        gather.gather_input.zero_()
+        repeat.full_tensor.zero_()
+        with torch.no_grad():
+            for name, tensor in saved.items():
+                getattr(layer, name).copy_(tensor)
+        state.rebuild_after_snapshot_restore(config)
+        torch.testing.assert_close(gather.gather_input, torch.movedim(saved["weight"], gather_dim, 0).contiguous())
+        torch.testing.assert_close(repeat.full_tensor, saved["scale"].repeat(2))
+        assert addresses == (gather.gather_input.data_ptr(), repeat.full_tensor.data_ptr())
+        method.switch_weight(layer, state, use_full_weight=True)
+        torch.testing.assert_close(layer.scale, saved["scale"].repeat(2))
+        method.switch_weight(layer, state, use_full_weight=False)
+        torch.testing.assert_close(layer.weight, saved["weight"])
+
+
 def test_weight_switch_config_uses_the_caller_selected_parallel_group() -> None:
     group = SimpleNamespace(world_size=4, rank_in_group=2)
 

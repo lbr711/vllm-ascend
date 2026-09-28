@@ -1552,6 +1552,10 @@ class AscendDSACPImpl(AttentionImplBase[Any]):
         self.tp_rank = self.tp_group.rank_in_group
         self.o_proj_weight_switch_config = WeightSwitchConfig.from_group(self.tp_group)
 
+        if self._o_proj_weight_switch_enabled:
+            self.wo_a_weight_state.rebuild_after_snapshot_restore(self.o_proj_weight_switch_config)
+            self.wo_b_weight_state.rebuild_after_snapshot_restore(self.o_proj_weight_switch_config)
+
     def _get_layer_metadata(
         self,
         attn_layer_name: str,
