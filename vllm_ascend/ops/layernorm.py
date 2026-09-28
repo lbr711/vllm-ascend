@@ -66,6 +66,12 @@ class AscendRMSNorm(RMSNorm):
             self.bias = torch.nn.Parameter(torch.zeros(hidden_size), requires_grad=False)
             self.bias.weight_loader = self._bias_weight_loader
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        # Weightless RMSNorm still passes an all-ones Tensor to the NPU op.
+        # It is not registered in state_dict; restore it without changing its address.
+        if not self.has_weight:
+            self.weight.fill_(1)
+
     def _bias_weight_loader(self, param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
         if param.numel() == 1 and loaded_weight.numel() == 1:
             # Sometimes scalar values aren't considered tensors with shapes
