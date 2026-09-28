@@ -131,6 +131,9 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
 
     with (
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reload_cos_and_sin_after_restore") as reload_rope,
+        patch(
+            "vllm_ascend.snapshot.model_runner_lifecycle.restore.reset_moe_padding_cache_after_snapshot_restore"
+        ) as reset_padding,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v2_runner_runtime_state") as reset_runner,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v1_runner_runtime_state") as reset_v1,
         patch(
@@ -140,6 +143,7 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
         _restore_model_runner_runtime_state(runner)
 
     reload_rope.assert_called_once_with(model)
+    reset_padding.assert_called_once_with()
     reset_runner.assert_called_once_with(runner)
     reset_v1.assert_not_called()
     reset_modules.assert_called_once_with(runner)
@@ -154,6 +158,9 @@ def test_restore_model_runner_runtime_state_dispatches_v1():
 
     with (
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reload_cos_and_sin_after_restore"),
+        patch(
+            "vllm_ascend.snapshot.model_runner_lifecycle.restore.reset_moe_padding_cache_after_snapshot_restore"
+        ) as reset_padding,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v2_runner_runtime_state") as reset_v2,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_v1_runner_runtime_state") as reset_v1,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._reset_target_and_drafter_modules_after_restore"),
@@ -161,6 +168,7 @@ def test_restore_model_runner_runtime_state_dispatches_v1():
         _restore_model_runner_runtime_state(runner)
 
     reset_v1.assert_called_once_with(runner)
+    reset_padding.assert_called_once_with()
     reset_v2.assert_not_called()
 
 
