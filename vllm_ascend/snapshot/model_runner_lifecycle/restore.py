@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from vllm.distributed.parallel_state import get_tp_group
 
+from vllm_ascend.ops.fused_moe.moe_utils import reset_moe_padding_cache_after_snapshot_restore
 from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     get_drafter_model,
@@ -59,6 +60,7 @@ def _restore_model_runner_runtime_state(runner) -> None:
     metadata, runner input buffers, model-module runtime state, and block tables.
     """
     reload_cos_and_sin_after_restore(runner.get_model())
+    reset_moe_padding_cache_after_snapshot_restore()
     if runner.vllm_config.use_v2_model_runner:
         _reset_v2_runner_runtime_state(runner)
     else:
