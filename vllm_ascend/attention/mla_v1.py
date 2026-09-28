@@ -80,6 +80,7 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8MXFP8DynamicLinearMethod,
 )
 from vllm_ascend.quantization.utils import enable_fa_quant
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,
@@ -445,6 +446,25 @@ class AscendMLAMetadataBuilder(MLACommonMetadataBuilder[AscendMLAMetadata]):
         # GatherPa starts reads at kernel-block boundaries even when the
         # scheduler's configured block size differs from the kernel block size.
         return lcm(vllm_config.cache_config.block_size, MLA_KERNEL_BLOCK_SIZE)
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.chunk_seq_lens = None
+        self.cu_seq_lens_cpu = None
+        self.num_chunks = None
+        self.max_context_chunk = 0
+        self.num_decodes = 0
+        self.num_prefills = 0
+        self.num_decode_tokens = 0
+        self.num_prefill_tokens = 0
+        self.context_lens_cpu = None
+        self.num_actual_tokens = None
+        self.block_table = None
+        self.slot_mapping = None
+        self.graph_pad_size = 0
+        self.query_lens = None
+        self.seq_lens = None
+        if self.nope_zero_rope_cache is not None:
+            self.nope_zero_rope_cache.clear()
 
     @staticmethod
     def determine_chunked_prefill_workspace_size(vllm_config: VllmConfig) -> int:
@@ -1363,6 +1383,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             self.supports_prolog_v3_writer() or (self._supports_flashmla_mlapo() and not self.dcp_enabled)
         ):
             self._prepare_flashmla_writer_buffers()
+        self._persist_snapshot_derived_tensors()
 
     def _prepare_flashmla_writer_buffers(self) -> None:
         """Keep a bounded dense PROLOG workspace alive across graph replay."""
@@ -1417,6 +1438,24 @@ class AscendMLAImpl(MLAAttentionImpl):
         cache_spec = attn_module.get_kv_cache_spec(config)
         if supports_strided_mla_cache(config, attn_module, cache_spec):
             self._prepare_prolog_v3_weights()
+    def _persist_snapshot_derived_tensors(self) -> None:
+        if self.vllm_config.snapshot_config is None:
+            return
+        host = self.q_proj
+        for name in (
+            "W_UV",
+            "W_UK_T",
+            "mlapo_W_UK_T",
+            "weight_dq",
+            "weight_dkv_kr",
+            "weight_uq_qr",
+            "dequant_scale_w_uq_qr",
+            "dequant_scale_w_dq",
+            "dequant_scale_w_dkv_kr",
+        ):
+            tensor = getattr(self, name, None)
+            if isinstance(tensor, torch.Tensor):
+                set_persistent_tensor(host, f"_snapshot_{name}", tensor)
 
     def _load_fa_quant_scales(self):
         layer = self.vllm_config.compilation_config.static_forward_context[self.layer_name]

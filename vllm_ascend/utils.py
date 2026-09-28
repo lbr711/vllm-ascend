@@ -86,6 +86,13 @@ _CUSTOM_OP_BASE_DIR = (
 )
 _IS_ROT_WEIGHT_USED = None
 
+RESTORE_FLAG_PATH = "/root/.grusflag"
+
+
+def is_restore() -> bool:
+    """Return True when the process is running after a container snapshot restore."""
+    return os.path.exists(RESTORE_FLAG_PATH)
+
 
 def is_gqa_pcp_dcp_config(model_config: Any, parallel_config: Any) -> bool:
     """Whether a GQA/MQA model enables both PCP and DCP."""

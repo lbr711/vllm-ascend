@@ -97,6 +97,16 @@ class AscendDflashProposer(AscendEagleProposer):
                 device=device,
             )
 
+    def restore_runtime_buffers(self) -> None:
+        super().restore_runtime_buffers()
+        self.arange_dflash.copy_(
+            torch.arange(
+                self.arange_dflash.shape[0],
+                dtype=self.arange_dflash.dtype,
+                device=self.arange_dflash.device,
+            )
+        )
+
     def set_inputs_first_pass(
         self,
         target_token_ids: torch.Tensor,
