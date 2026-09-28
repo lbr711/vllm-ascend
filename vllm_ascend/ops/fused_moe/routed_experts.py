@@ -406,8 +406,8 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
     def update_expert_map_info(self):
         super().update_expert_map_info()
         if get_current_vllm_config().snapshot_config is not None:
-            # MRV2 consumes the upstream device maps, rather than the V1 CPU
-            # ascend_expert_map. Keep the manager and layer aliases intact.
+            # MRV2 consumes the upstream maps. V1's separate Ascend execution
+            # map is registered in init_eplb. Keep the manager aliases intact.
             names = ["_expert_map", "expert_mask"]
             if self.expert_map_manager.routing_tables is not None:
                 names.extend(("expert_global_to_physical", "expert_physical_to_global", "expert_local_to_global"))
@@ -484,6 +484,9 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
             n_shared_experts,
             tp_size=vllm_config.parallel_config.tensor_parallel_size,
         )
+        if vllm_config.snapshot_config is not None:
+            # V1 dispatch consumes this independent device map, not _expert_map.
+            persist_tensor_attributes(self, ("_ascend_expert_map",))
 
         self.moe_config.global_redundant_expert_num = self.global_redundant_expert_num
         local_num_experts = self.moe_config.num_local_experts
@@ -523,7 +526,6 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
 
         # Level-2 sleep discards NPU tensors that are not parameters/buffers.
         # Register Ascend runtime EPLB NPU state as named buffers for wake restore.
-        # ascend_expert_map stays a plain CPU attribute and does not need promotion.
         self._promote_attr_to_buffer("log2phy")
         if self.dynamic_eplb:
             self._promote_attr_to_buffer("moe_load")
@@ -561,7 +563,8 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
 
     @ascend_expert_map.setter
     def ascend_expert_map(self, expert_map: torch.Tensor | None) -> None:
-        object.__setattr__(self, "_ascend_expert_map", expert_map)
+        # Preserve buffer registration when replacing a snapshot-persistent map.
+        torch.nn.Module.__setattr__(self, "_ascend_expert_map", expert_map)
 
     def update_expert_map(self, new_expert_map: torch.Tensor | None = None) -> None:
         """Update the upstream map or preserve the legacy Ascend update API."""
