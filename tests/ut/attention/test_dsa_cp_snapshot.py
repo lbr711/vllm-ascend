@@ -1,6 +1,7 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import pytest
 import torch
 
 from vllm_ascend.attention.context_parallel.dsa_cp import (
@@ -11,7 +12,25 @@ from vllm_ascend.attention.context_parallel.sfa_cp import (
     AscendSFADSACPImpl,
     AscendSFAPCPImpl,
 )
-from vllm_ascend.attention.sfa_v1 import AscendSFAImpl
+from vllm_ascend.attention.sfa_v1 import AscendSFAImpl, AscendSFAMetadataBuilder, SMLA_DEFAULT_SINK_VALUE
+
+
+def test_smla_sinks_restored_in_place():
+    builder = AscendSFAMetadataBuilder.__new__(AscendSFAMetadataBuilder)
+    state = SimpleNamespace(
+        use_smla=True,
+        block_table_buffer=torch.ones(2),
+        metadata_buffer=torch.ones(2),
+        length_buffer=torch.ones(2),
+        sinks=torch.zeros(4),
+    )
+    builder.nope_states = {0: state, 1: SimpleNamespace(use_smla=False, block_table_buffer=torch.ones(2))}
+    address = state.sinks.data_ptr()
+    for _ in range(2):
+        state.sinks.zero_()
+        builder.reset_runtime_state_after_snapshot_restore()
+        torch.testing.assert_close(state.sinks, torch.full((4,), SMLA_DEFAULT_SINK_VALUE))
+        assert state.sinks.data_ptr() == address
 
 
 def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
@@ -97,6 +116,9 @@ def test_metadata_builder_reset_clears_requests_and_preserves_configuration():
 
 def test_dsa_cp_impl_refreshes_tp_group_after_restore():
     impl = AscendDSACPImpl.__new__(AscendDSACPImpl)
+    impl._o_proj_weight_switch_enabled = True
+    impl.wo_a_weight_state = Mock()
+    impl.wo_b_weight_state = Mock()
     group = SimpleNamespace(world_size=8, rank_in_group=3)
 
     with patch(
@@ -109,11 +131,18 @@ def test_dsa_cp_impl_refreshes_tp_group_after_restore():
     assert impl.tp_size == 8
     assert impl.tp_rank == 3
     assert impl.o_proj_weight_switch_config.group is group
+    impl.wo_a_weight_state.rebuild_after_snapshot_restore.assert_called_once_with(impl.o_proj_weight_switch_config)
+    impl.wo_b_weight_state.rebuild_after_snapshot_restore.assert_called_once_with(impl.o_proj_weight_switch_config)
 
 
-def test_sfa_cp_impls_refresh_weight_switch_group_after_restore():
+@pytest.mark.parametrize("enabled", [False, True])
+def test_sfa_cp_impls_refresh_weight_switch_group_after_restore(enabled):
     pcp_impl = AscendSFAPCPImpl.__new__(AscendSFAPCPImpl)
     dsa_cp_impl = AscendSFADSACPImpl.__new__(AscendSFADSACPImpl)
+    pcp_impl._o_proj_weight_switch_enabled = enabled
+    pcp_impl.o_proj_weight_state = Mock()
+    dsa_cp_impl._o_proj_weight_switch_enabled = enabled
+    dsa_cp_impl.o_proj_weight_state = Mock()
     pcp_group = SimpleNamespace(world_size=2, rank_in_group=1)
     tp_group = SimpleNamespace(world_size=8, rank_in_group=3)
 
@@ -138,3 +167,10 @@ def test_sfa_cp_impls_refresh_weight_switch_group_after_restore():
     assert pcp_impl.o_proj_weight_switch_config.shard_axis == "input"
     assert dsa_cp_impl.o_proj_weight_switch_config.group is tp_group
     assert reset_sfa.call_count == 2
+    for impl in (pcp_impl, dsa_cp_impl):
+        if enabled:
+            impl.o_proj_weight_state.rebuild_after_snapshot_restore.assert_called_once_with(
+                impl.o_proj_weight_switch_config
+            )
+        else:
+            impl.o_proj_weight_state.rebuild_after_snapshot_restore.assert_not_called()
