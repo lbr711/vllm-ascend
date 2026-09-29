@@ -96,7 +96,15 @@ def test_v2_request_state_reset_and_idle_contract():
     assert not state.num_computed_tokens._staged_write_contents
 
 
-def test_v2_graph_managers_recreated_without_loading_or_compiling_model():
+@pytest.mark.parametrize("with_speculator", [False, True])
+@pytest.mark.parametrize("with_fast_prefill", [False, True])
+def test_v2_graph_managers_recreated_without_loading_or_compiling_model(
+    monkeypatch, with_speculator, with_fast_prefill
+):
+    from vllm_ascend.compilation import acl_graph
+
+    for name in ("_graph_params", "_draft_graph_params", "_draft_graph_prefill_params"):
+        monkeypatch.setattr(acl_graph, name, object())
     runner = SimpleNamespace(
         vllm_config=object(),
         device=torch.device("cpu"),
@@ -104,13 +112,42 @@ def test_v2_graph_managers_recreated_without_loading_or_compiling_model():
         cudagraph_manager=SimpleNamespace(
             cudagraph_mode=1, lora_capture_cases=[0], varlen_decode=False, ubatch_runner=None
         ),
-        speculator=SimpleNamespace(init_cudagraph_manager=MagicMock()),
+        fast_prefill=SimpleNamespace(cudagraph_manager=None) if with_fast_prefill else None,
+        speculator=SimpleNamespace(init_cudagraph_manager=MagicMock()) if with_speculator else None,
     )
-    with patch("vllm_ascend.worker.v2.aclgraph_utils.ModelAclGraphManager") as manager:
+    if runner.fast_prefill is not None:
+        runner.fast_prefill.cudagraph_manager = runner.cudagraph_manager
+
+    def construct_target(*args, **kwargs):
+        assert acl_graph._draft_graph_params is None
+        assert acl_graph._draft_graph_prefill_params is None
+        # Use the real registration guard that failed on hardware.
+        acl_graph.set_graph_params([4, 8])
+        return SimpleNamespace(cudagraph_mode=1, lora_capture_cases=[0], varlen_decode=False, ubatch_runner=None)
+
+    def construct_draft(mode):
+        assert acl_graph._graph_params is not None
+        acl_graph.set_draft_graph_prefill_params([4, 8])
+        acl_graph.set_draft_graph_params([1, 2])
+
+    if runner.speculator is not None:
+        runner.speculator.init_cudagraph_manager.side_effect = construct_draft
+    with patch("vllm_ascend.worker.v2.aclgraph_utils.ModelAclGraphManager", side_effect=construct_target) as manager:
         reset_graph_managers(runner)
-    assert runner.cudagraph_manager is manager.return_value
+        previous_manager = runner.cudagraph_manager
+        reset_graph_managers(runner)
+    assert runner.cudagraph_manager is not previous_manager
     assert manager.call_args.kwargs["ubatch_runner"] is None
-    runner.speculator.init_cudagraph_manager.assert_called_once_with(1)
+    if runner.fast_prefill is not None:
+        assert runner.fast_prefill.cudagraph_manager is runner.cudagraph_manager
+    if runner.speculator is not None:
+        assert runner.speculator.init_cudagraph_manager.call_count == 2
+        runner.speculator.init_cudagraph_manager.assert_called_with(1)
+    else:
+        assert acl_graph._draft_graph_params is None
+        assert acl_graph._draft_graph_prefill_params is None
+    with pytest.raises(ValueError, match="already been set"):
+        acl_graph.set_graph_params([4, 8])
 
 
 @pytest.mark.parametrize("adaptive_verification", [False, True])
