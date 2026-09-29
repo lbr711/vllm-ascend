@@ -357,7 +357,15 @@ def _reset_target_and_drafter_modules_after_restore(runner) -> None:
 
 def reset_graph_managers(runner) -> None:
     """Drop Model Runner V2 graph handles after the ACL Graph pool reset."""
+    from vllm_ascend.compilation import acl_graph
     from vllm_ascend.worker.v2.aclgraph_utils import ModelAclGraphManager
+
+    # V1 reuses the GraphParams objects after clearing their contents. V2
+    # manager constructors register new objects, so drop all three old
+    # registrations once, before constructing either target or draft managers.
+    acl_graph._graph_params = None
+    acl_graph._draft_graph_params = None
+    acl_graph._draft_graph_prefill_params = None
 
     manager = runner.cudagraph_manager
     runner.cudagraph_manager = ModelAclGraphManager(
@@ -370,5 +378,8 @@ def reset_graph_managers(runner) -> None:
         varlen_decode=manager.varlen_decode,
         ubatch_runner=manager.ubatch_runner,
     )
+    if runner.fast_prefill is not None:
+        # This helper dispatches through the manager, not through the runner.
+        runner.fast_prefill.cudagraph_manager = runner.cudagraph_manager
     if runner.speculator is not None:
         runner.speculator.init_cudagraph_manager(manager.cudagraph_mode)

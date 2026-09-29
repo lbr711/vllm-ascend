@@ -304,16 +304,41 @@ def test_rebuild_kv_transfer_engine_after_snapshot_restore_delegates_to_hybrid_c
 def test_recapture_graph_clears_and_recaptures(worker):
     from vllm_ascend.snapshot.worker_lifecycle import _recapture_graph
 
+    calls = MagicMock()
     with (
         patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries") as mock_clear_entries,
         patch("vllm_ascend.compilation.acl_graph.clear_graph_params_for_recapture") as mock_clear_params,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reset_graph_managers") as reset_graph_managers,
     ):
+        calls.attach_mock(mock_clear_entries, "clear_entries")
+        calls.attach_mock(mock_clear_params, "clear_params")
+        calls.attach_mock(reset_graph_managers, "reset_managers")
+        calls.attach_mock(worker.model_runner.capture_model, "capture")
         _recapture_graph(worker)
 
     mock_clear_entries.assert_called_once()
     mock_clear_params.assert_called_once()
     reset_graph_managers.assert_called_once_with(worker.model_runner)
+    assert [call[0] for call in calls.mock_calls] == [
+        "clear_entries",
+        "clear_params",
+        "reset_managers",
+        "capture",
+    ]
+
+
+def test_recapture_graph_eager_skips_manager_reset(worker):
+    from vllm_ascend.snapshot.worker_lifecycle import _recapture_graph
+
+    worker.model_config.enforce_eager = True
+    with (
+        patch("vllm_ascend.compilation.acl_graph.clear_all_aclgraph_entries") as clear_entries,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.reset_graph_managers") as reset,
+    ):
+        _recapture_graph(worker)
+    clear_entries.assert_not_called()
+    reset.assert_not_called()
+    worker.model_runner.capture_model.assert_not_called()
 
 
 def test_recapture_graph_v1_skips_v2_graph_manager_reset(worker):
