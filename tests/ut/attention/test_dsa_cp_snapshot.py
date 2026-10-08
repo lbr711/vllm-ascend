@@ -12,7 +12,7 @@ from vllm_ascend.attention.context_parallel.sfa_cp import (
     AscendSFADSACPImpl,
     AscendSFAPCPImpl,
 )
-from vllm_ascend.attention.sfa_v1 import AscendSFAImpl, AscendSFAMetadataBuilder, SMLA_DEFAULT_SINK_VALUE
+from vllm_ascend.attention.sfa_v1 import SMLA_DEFAULT_SINK_VALUE, AscendSFAImpl, AscendSFAMetadataBuilder
 
 
 def test_smla_sinks_restored_in_place():
