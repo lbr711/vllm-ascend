@@ -1320,6 +1320,10 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.connector_scheduler is not None
         self.connector_scheduler.set_xfer_handshake_metadata_from_workers(metadata)
 
+    def prepare_for_snapshot_restore(self) -> None:
+        if self.connector_worker is not None:
+            self.connector_worker.prepare_for_snapshot_restore()
+
     def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
         if new_engine_id is not None:
             self.engine_id = new_engine_id
@@ -2217,28 +2221,19 @@ class MooncakeConnectorWorker:
             new_engine_id,
         )
 
-    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
-        """[snapshot] Rebind KV transfer endpoints on the new pod IP after resume.
-
-        Mirrors the MooncakeLayerwiseConnector rebuild: destroy the stale
-        TransferEngine (bound to the pre-snapshot pod IP), rebuild it on the new
-        IP, re-register the KV memory, and rebind the handshake socket.
-
-        In this connector the handshake ROUTER lives in the *producer* send
-        thread, so the producer restarts that thread with a metadata carrying
-        the new te_rpc_port; the consumer only re-points its recv thread at the
-        rebuilt engine (it connects out and binds nothing).
-        """
+    def prepare_for_snapshot_restore(self) -> None:
+        """Release the old transport before communication-group teardown."""
         import gc
-
-        self.side_channel_host = local_ip
 
         kv_cfg = self.vllm_config.kv_transfer_config
         if kv_cfg is None or not (kv_cfg.is_kv_producer or kv_cfg.is_kv_consumer):
             return
+        if self.engine is None:
+            return
 
-        old_engine = getattr(self, "engine", None)
+        old_engine = self.engine
         old_send = self.kv_send_thread
+        self._restart_send_after_snapshot = old_send is not None
 
         # Stop the listener before tearing down the transfer engine. Leaving the
         # pre-snapshot listener alive while a new engine is created can expose
@@ -2250,24 +2245,19 @@ class MooncakeConnectorWorker:
                 raise RuntimeError("[snapshot][rebuild] old KV send thread did not stop")
             self.kv_send_thread = None
 
-        # Synchronize the rotated ID only after the old producer listener has
-        # stopped, so it cannot expose new identity with stale transfer metadata.
-        if new_engine_id is not None:
-            self._sync_engine_id_after_snapshot(new_engine_id)
-
         # Detach all references to the old transfer engine before resetting the singleton.
         self.engine = None
         if self.kv_recv_thread is not None:
             self.kv_recv_thread.engine = None
 
         # Unregister all known regions while the old transfer engine is still valid.
-        if old_engine is not None and self._registered_regions is not None:
+        # A shared pool may already have unregistered/reset the singleton.
+        if global_te.transfer_engine is old_engine and self._registered_regions is not None:
             ptrs, _lengths = self._registered_regions
             for ptr in dict.fromkeys(ptrs):
-                try:
-                    old_engine.unregister_memory(ptr)
-                except Exception as e:
-                    logger.warning("[snapshot][rebuild] unregister %s failed: %s", hex(ptr), e)
+                ret = old_engine.unregister_memory(ptr)
+                if ret != 0:
+                    raise RuntimeError(f"[snapshot] unregister {ptr:#x} failed: {ret}")
 
         # Fully destroy the old transfer engine before creating the replacement. In
         # particular, the local old_engine reference must be dropped before
@@ -2275,6 +2265,16 @@ class MooncakeConnectorWorker:
         global_te.reset()
         del old_engine
         gc.collect()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        """Recreate the transport and registrations after model/graph restore."""
+        self.prepare_for_snapshot_restore()
+        self.side_channel_host = local_ip
+        kv_cfg = self.vllm_config.kv_transfer_config
+        if kv_cfg is None or not (kv_cfg.is_kv_producer or kv_cfg.is_kv_consumer):
+            return
+        if new_engine_id is not None:
+            self._sync_engine_id_after_snapshot(new_engine_id)
 
         # Create the replacement only after old transport finalization.
         self.engine = global_te.get_transfer_engine(local_ip, device_name=None)
@@ -2289,7 +2289,7 @@ class MooncakeConnectorWorker:
 
         # Restart the producer listener only after the new engine and registrations
         # are ready.
-        if kv_cfg.is_kv_producer and old_send is not None:
+        if kv_cfg.is_kv_producer and self._restart_send_after_snapshot:
             metadata = self.xfer_handshake_metadata
             if metadata is not None:
                 metadata.te_rpc_port = self.te_rpc_port

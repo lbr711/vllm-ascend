@@ -331,11 +331,25 @@ class MooncakeBackend(Backend):
             global_te.register_buffer(ptrs, lengths)
 
     def prepare_for_snapshot_restore(self) -> None:
-        if self._store_was_initialized is None:
-            self._store_was_initialized = self._store_initialized
+        if self._store_was_initialized is not None:
+            return
+        self._store_was_initialized = self._store_initialized
         self.store = None
         self.local_seg = None
         self._store_initialized = False
+
+        # An independent store owns its engine; releasing the store above destroys
+        # that transport. Only the shared-engine path touches the global singleton.
+        if not self._use_fabric_mem and not self._use_store_independent_te:
+            old_engine = global_te.transfer_engine
+            if old_engine is not None and self._registered_buffers is not None:
+                ptrs, _ = self._registered_buffers
+                for ptr in dict.fromkeys(ptrs):
+                    ret = old_engine.unregister_memory(ptr)
+                    if ret != 0:
+                        raise RuntimeError(f"[snapshot] unregister {ptr:#x} failed: {ret}")
+            global_te.reset()
+            del old_engine
 
         import gc
 
@@ -348,17 +362,6 @@ class MooncakeBackend(Backend):
         if self.config.protocol != "ascend":
             raise NotImplementedError(f"MooncakeBackend does not support protocol {self.config.protocol!r}.")
         self._local_hostname = local_ip
-
-        # An independent store owns its engine; releasing the store above destroys
-        # that transport. Only the shared-engine path touches the global singleton.
-        if not self._use_fabric_mem and not self._use_store_independent_te and global_te.hostname != local_ip:
-            old_engine = global_te.transfer_engine
-            if old_engine is not None and self._registered_buffers is not None:
-                ptrs, _ = self._registered_buffers
-                for ptr in dict.fromkeys(ptrs):
-                    old_engine.unregister_memory(ptr)
-            global_te.reset()
-            del old_engine
 
         if restore_initialized_store or not self._lazy_init:
             self.store = self._setup_store()

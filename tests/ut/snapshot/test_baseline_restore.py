@@ -8,6 +8,7 @@ This tests tensor contents/ownership and hook dispatch, not NPU execution.
 import ast
 import math
 import sys
+import weakref
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -34,6 +35,253 @@ def load_nodes(path, names, namespace, methods=None):
     ast.fix_missing_locations(tree)
     exec(compile(tree, str(ROOT / path), "exec"), namespace)
     return namespace
+
+
+@pytest.mark.parametrize("fail_prepare", [False, True])
+def test_resume_releases_kv_transport_before_groups(fail_prepare):
+    events = []
+
+    def prepare(_worker):
+        events.append("destroy_kv")
+        if fail_prepare:
+            raise RuntimeError("transport teardown failed")
+
+    ns = {
+        "_call_aclrt_snapshot_api": lambda _, name: events.append(name),
+        "_reset_triton_kernel_caches": lambda: None,
+        "_update_worker_info": lambda *_: None,
+        "_prepare_kv_transfer_for_snapshot_restore": prepare,
+        "_rebuild_parallel_groups": lambda _: events.append("groups"),
+        "restore_model_runner": lambda *_: events.append("model"),
+        "_recapture_graph": lambda _: events.append("graph"),
+        "_rebuild_kv_transfer_engine": lambda *_: events.append("create_kv"),
+        "time": SimpleNamespace(perf_counter=lambda: 0),
+        "logger": Mock(),
+    }
+    load_nodes("snapshot/worker_lifecycle.py", ["resume_worker", "_run_timed_steps"], ns)
+    worker = SimpleNamespace(rank=0, model_runner=object())
+    if fail_prepare:
+        with pytest.raises(RuntimeError, match="transport teardown failed"):
+            ns["resume_worker"](worker, "new-ip", "master-ip")
+        assert events == ["aclrtSnapShotProcessRestore", "aclrtSnapShotProcessUnlock", "destroy_kv"]
+    else:
+        ns["resume_worker"](worker, "new-ip", "master-ip")
+        assert events == [
+            "aclrtSnapShotProcessRestore",
+            "aclrtSnapShotProcessUnlock",
+            "destroy_kv",
+            "groups",
+            "model",
+            "graph",
+            "create_kv",
+        ]
+
+
+@pytest.mark.parametrize("role,has_group", [(None, True), ("none", True), ("producer", False), ("consumer", True)])
+def test_snapshot_kv_prepare_respects_configuration(role, has_group):
+    group = Mock()
+    ns = {"has_kv_transfer_group": lambda: has_group, "get_kv_transfer_group": Mock(return_value=group)}
+    load_nodes("snapshot/worker_lifecycle.py", ["_prepare_kv_transfer_for_snapshot_restore"], ns)
+    config = (
+        None if role is None else SimpleNamespace(is_kv_producer=role == "producer", is_kv_consumer=role == "consumer")
+    )
+    ns["_prepare_kv_transfer_for_snapshot_restore"](
+        SimpleNamespace(vllm_config=SimpleNamespace(kv_transfer_config=config))
+    )
+    assert group.prepare_for_snapshot_restore.call_count == int(role == "consumer" and has_group)
+
+
+def make_snapshot_kv_worker(kind, producer):
+    """Load actual transport lifecycle methods without importing NPU backends."""
+    engine = Mock()
+    engine.unregister_memory.return_value = 0
+    new_engine = Mock()
+    new_engine.register_memory.return_value = 0
+    transfer_engine_manager = SimpleNamespace(transfer_engine=engine, hostname="old-ip", register_buffer=Mock())
+
+    def reset():
+        transfer_engine_manager.transfer_engine = None
+        transfer_engine_manager.hostname = None
+
+    def create(hostname, device_name):
+        transfer_engine_manager.transfer_engine = new_engine
+        transfer_engine_manager.hostname = hostname
+        return new_engine
+
+    transfer_engine_manager.reset = Mock(side_effect=reset)
+    transfer_engine_manager.get_transfer_engine = Mock(side_effect=create)
+    new_thread = Mock()
+    ns = {
+        "Base": object,
+        "global_te": transfer_engine_manager,
+        "logger": Mock(),
+        "get_tp_group": Mock(),
+        "threading": SimpleNamespace(Event=Mock),
+        "KVCacheSendingThread": Mock(return_value=new_thread),
+        "KVCacheRecvingLayerThread": Mock(return_value=new_thread),
+        "MooncakeAgentMetadata": Mock(),
+    }
+    cls = "MooncakeLayerwiseConnectorWorker" if kind == "layerwise" else "MooncakeConnectorWorker"
+    filename = "mooncake_connector.py" if kind == "normal" else f"mooncake_{kind}_connector.py"
+    load_nodes(
+        f"distributed/kv_transfer/kv_p2p/{filename}",
+        [cls],
+        ns,
+        {"prepare_for_snapshot_restore", "rebuild_kv_transfer_endpoint"},
+    )
+    worker = ns[cls]()
+    worker.vllm_config = SimpleNamespace(
+        kv_transfer_config=SimpleNamespace(is_kv_producer=producer, is_kv_consumer=not producer)
+    )
+    worker.engine = engine
+    worker._registered_regions = ([4096], [8192]) if kind == "hybrid" else SimpleNamespace(ptrs=[4096], lengths=[8192])
+    worker._engine_device_name = "npu"
+    worker._sync_engine_id_after_snapshot = Mock()
+    worker.tp_rank = worker.pcp_rank = 0
+    worker.tp_size = worker.pd_head_ratio = worker._prefill_tp_size = 1
+    worker.engine_id, worker.side_channel_port = "engine", 12345
+    worker.kv_caches = {}
+    worker.xfer_handshake_metadata = Mock()
+    worker.layer_metadata = []
+    listener = Mock()
+    listener.is_alive.return_value = False
+    has_peer = producer if kind == "layerwise" else not producer
+    peer = SimpleNamespace(engine=engine if has_peer else None)
+    if kind == "layerwise":
+        worker.kv_recv_layer_thread = None if producer else listener
+        worker.kv_send_layer_thread = peer if producer else None
+        worker.k_buffer = worker.v_buffer = None
+    else:
+        worker.kv_send_thread = listener if producer else None
+        worker.kv_recv_thread = None if producer else peer
+    return worker, transfer_engine_manager, listener, peer
+
+
+@pytest.mark.parametrize("kind", ["normal", "hybrid", "layerwise"])
+@pytest.mark.parametrize("producer", [False, True])
+def test_snapshot_kv_prepare_drops_last_engine_reference(kind, producer):
+    worker, transfer_engine_manager, listener, peer = make_snapshot_kv_worker(kind, producer)
+    old_engine = weakref.ref(worker.engine)
+    worker.prepare_for_snapshot_restore()
+    worker.prepare_for_snapshot_restore()
+    assert old_engine() is None
+    assert worker.engine is None
+    transfer_engine_manager.get_transfer_engine.assert_not_called()
+    transfer_engine_manager.reset.assert_called_once()
+    worker.rebuild_kv_transfer_endpoint("new-ip", "new-engine")
+    transfer_engine_manager.reset.assert_called_once()  # rebuild must not tear down again
+    transfer_engine_manager.get_transfer_engine.assert_called_once()
+    transfer_engine_manager.register_buffer.assert_called_once_with([4096], [8192])
+    has_listener = (not producer) if kind == "layerwise" else producer
+    assert listener.stop.call_count == int(has_listener)
+    if not has_listener:
+        assert peer.engine is worker.engine
+
+
+@pytest.mark.parametrize("failure", ["listener", "unregister"])
+def test_snapshot_kv_prepare_failure_does_not_create_transport(failure):
+    worker, transfer_engine_manager, listener, _ = make_snapshot_kv_worker("normal", True)
+    listener.is_alive.return_value = failure == "listener"
+    if failure == "unregister":
+        worker.engine.unregister_memory.return_value = -1
+    with pytest.raises(RuntimeError):
+        worker.prepare_for_snapshot_restore()
+    transfer_engine_manager.reset.assert_not_called()
+    transfer_engine_manager.get_transfer_engine.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["shared", "independent", "fabric"])
+@pytest.mark.parametrize("lazy,initialized", [(False, True), (True, True), (True, False)])
+def test_snapshot_pool_prepare_preserves_engine_mode_and_lazy_init(mode, lazy, initialized):
+    _, transfer_engine_manager, _, _ = make_snapshot_kv_worker("normal", False)
+    config = SimpleNamespace(protocol="ascend")
+    ns = {
+        "Base": object,
+        "global_te": transfer_engine_manager,
+        "MooncakeStoreConfig": SimpleNamespace(load_from_env=lambda: config),
+    }
+    load_nodes(
+        "distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py",
+        ["MooncakeBackend"],
+        ns,
+        {"prepare_for_snapshot_restore", "reset_after_snapshot"},
+    )
+    pool = ns["MooncakeBackend"]()
+    pool._store_was_initialized = None
+    pool._store_initialized, pool._lazy_init = initialized, lazy
+    pool._use_fabric_mem, pool._use_store_independent_te = mode == "fabric", mode == "independent"
+    pool._registered_buffers = ([4096], [8192]) if initialized else None
+    pool.store = object() if initialized else None
+    pool._setup_store, pool.register_buffer = Mock(), Mock()
+    pool.prepare_for_snapshot_restore()
+    assert pool.store is None
+    assert transfer_engine_manager.reset.call_count == int(mode == "shared")
+    pool._setup_store.assert_not_called()
+    # A P2P sibling may now create the replacement singleton, even on the same IP.
+    replacement = transfer_engine_manager.get_transfer_engine("old-ip", None)
+    pool.reset_after_snapshot("old-ip")
+    assert transfer_engine_manager.transfer_engine is replacement
+    assert transfer_engine_manager.reset.call_count == int(mode == "shared")
+    assert pool._setup_store.call_count == int(initialized or not lazy)
+    assert pool.register_buffer.call_count == int(initialized)
+    assert pool._store_was_initialized is None
+
+
+@pytest.mark.parametrize("pool_first", [False, True])
+def test_snapshot_multi_connector_releases_shared_engine_then_reuses_replacement(pool_first):
+    worker, transfer_engine_manager, _, peer = make_snapshot_kv_worker("normal", False)
+    old_engine = weakref.ref(worker.engine)
+    unregister = worker.engine.unregister_memory
+    config = SimpleNamespace(protocol="ascend")
+    ns = {
+        "Base": object,
+        "global_te": transfer_engine_manager,
+        "MooncakeStoreConfig": SimpleNamespace(load_from_env=lambda: config),
+    }
+    load_nodes(
+        "distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py",
+        ["MooncakeBackend"],
+        ns,
+        {"prepare_for_snapshot_restore", "reset_after_snapshot", "register_buffer"},
+    )
+    pool = ns["MooncakeBackend"]()
+    pool._store_was_initialized = None
+    pool._store_initialized = True
+    pool._lazy_init = pool._use_fabric_mem = pool._use_store_independent_te = False
+    pool._registered_buffers = ([4096], [8192])
+    pool.store = SimpleNamespace(engine=worker.engine)
+    pool._setup_store = lambda: SimpleNamespace(
+        engine=transfer_engine_manager.get_transfer_engine(pool._local_hostname, None)
+    )
+
+    class PoolConnector:
+        def prepare_for_snapshot_restore(self):
+            pool.prepare_for_snapshot_restore()
+
+        def rebuild_kv_transfer_endpoint(self, local_ip, new_engine_id):
+            pool.reset_after_snapshot(local_ip)
+
+    ns = {"Base": object, "AscendStoreConnector": PoolConnector}
+    load_nodes(
+        "distributed/kv_transfer/ascend_multi_connector.py",
+        ["AscendMultiConnector"],
+        ns,
+        {"prepare_for_snapshot_restore", "rebuild_kv_transfer_endpoint"},
+    )
+    connector = ns["AscendMultiConnector"]()
+    connector._connectors = [PoolConnector(), worker] if pool_first else [worker, PoolConnector()]
+    connector.prepare_for_snapshot_restore()
+    unregister.assert_called_once_with(4096)  # shared regions must not be unregistered twice
+    del unregister  # Mock bound-method ownership must not hold the old engine alive
+    import gc
+
+    gc.collect()
+    assert old_engine() is None
+    transfer_engine_manager.get_transfer_engine.assert_not_called()
+    resets = transfer_engine_manager.reset.call_count
+    connector.rebuild_kv_transfer_endpoint("old-ip", "new-id")
+    assert transfer_engine_manager.reset.call_count == resets
+    assert worker.engine is transfer_engine_manager.transfer_engine is pool.store.engine is peer.engine
 
 
 def test_turboquant_restore_preserves_contents_and_addresses():

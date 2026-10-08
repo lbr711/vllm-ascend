@@ -97,6 +97,7 @@ def resume_worker(
             "update_worker_network",
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
         ),
+        ("destroy_kv_transfer_endpoint", lambda: _prepare_kv_transfer_for_snapshot_restore(worker)),
         ("rebuild_parallel_groups", lambda: _rebuild_parallel_groups(worker)),
         ("restore_model_checkpoint", lambda: restore_model_runner(worker.model_runner, model_path)),
         ("recapture_graph", lambda: _recapture_graph(worker)),
@@ -210,6 +211,14 @@ def _update_worker_info(worker, local_ip: str, data_parallel_master_ip: str) -> 
         local_ip,
         data_parallel_master_ip,
     )
+
+
+def _prepare_kv_transfer_for_snapshot_restore(worker) -> None:
+    kv_cfg = worker.vllm_config.kv_transfer_config
+    if kv_cfg is None or not (kv_cfg.is_kv_producer or kv_cfg.is_kv_consumer):
+        return
+    if has_kv_transfer_group():
+        get_kv_transfer_group().prepare_for_snapshot_restore()
 
 
 def _rebuild_kv_transfer_engine(worker, local_ip: str, new_engine_id: str | None = None) -> None:

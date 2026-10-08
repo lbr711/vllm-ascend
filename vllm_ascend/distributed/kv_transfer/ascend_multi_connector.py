@@ -147,13 +147,19 @@ class AscendMultiConnector(MultiConnector, SupportsHMA):
             if callable(hook):
                 hook(layer_name)
 
-    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
-        """Rebuild snapshot-sensitive endpoints owned by sub-connectors."""
+    def prepare_for_snapshot_restore(self) -> None:
+        """Release every owner's old transport before rebuilding any endpoint."""
+        # Stores must release their borrowed engine handles before P2P teardown.
         for connector in self._connectors:
-            prepare = getattr(connector, "prepare_for_snapshot_restore", None)
-            if callable(prepare):
-                prepare()
+            if isinstance(connector, AscendStoreConnector):
+                connector.prepare_for_snapshot_restore()
+        for connector in self._connectors:
+            if not isinstance(connector, AscendStoreConnector):
+                connector.prepare_for_snapshot_restore()
 
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        """Rebuild P2P first so pooling can attach to the replacement engine."""
+        self.prepare_for_snapshot_restore()
         pool_connectors = [connector for connector in self._connectors if isinstance(connector, AscendStoreConnector)]
         other_connectors = [
             connector for connector in self._connectors if not isinstance(connector, AscendStoreConnector)

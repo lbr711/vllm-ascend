@@ -402,6 +402,7 @@ class TestMooncakeBackendSetup(unittest.TestCase):
                     patch.object(MooncakeStoreConfig, "load_from_env", return_value=backend.config),
                 ):
                     transfer_engine.hostname = "10.0.0.7"
+                    transfer_engine.transfer_engine.unregister_memory.return_value = 0
                     backend.prepare_for_snapshot_restore()
                     backend.reset_after_snapshot("10.0.0.8")
                     self.assertIs(backend.store, new_store)

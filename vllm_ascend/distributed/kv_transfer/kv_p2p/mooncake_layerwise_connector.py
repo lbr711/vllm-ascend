@@ -861,6 +861,10 @@ class MooncakeLayerwiseConnector(KVConnectorBase_V1, SupportsHMA):
         """MooncakeLayerwiseConnector does not save explicitly."""
         pass
 
+    def prepare_for_snapshot_restore(self) -> None:
+        if self.connector_worker is not None:
+            self.connector_worker.prepare_for_snapshot_restore()
+
     def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
         if new_engine_id is not None:
             self.engine_id = new_engine_id
@@ -1368,17 +1372,17 @@ class MooncakeLayerwiseConnectorWorker:
             if error is not None:
                 raise RuntimeError(f"Mooncake failed to transfer physical KV slot {slot_id}: {error}")
 
-    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
-        """[snapshot] Rebind KV transfer endpoints on the new pod IP after resume."""
-        self.side_channel_host = local_ip
-        self.tp_group = get_tp_group()
-
+    def prepare_for_snapshot_restore(self) -> None:
+        """Release the old transport before communication-group teardown."""
         kv_cfg = self.vllm_config.kv_transfer_config
         if kv_cfg is None or not (kv_cfg.is_kv_producer or kv_cfg.is_kv_consumer):
             return
+        if self.engine is None:
+            return
 
-        old_engine = getattr(self, "engine", None)
+        old_engine = self.engine
         old_recv = self.kv_recv_layer_thread
+        self._restart_recv_after_snapshot = old_recv is not None
 
         # Stop the listener before tearing down the transfer engine. Leaving the
         # pre-snapshot listener alive while a new engine is created can expose
@@ -1398,16 +1402,15 @@ class MooncakeLayerwiseConnectorWorker:
         # Unregister all known regions while the old transfer engine is valid.
         if old_engine is not None:
             ptrs = []
-            if self._registered_regions is not None:
+            if global_te.transfer_engine is old_engine and self._registered_regions is not None:
                 ptrs.extend(self._registered_regions.ptrs)
             for tensor in (self.k_buffer, self.v_buffer):
                 if tensor is not None:
                     ptrs.append(tensor.data_ptr())
             for ptr in dict.fromkeys(ptrs):  # dedup, keep order
-                try:
-                    old_engine.unregister_memory(ptr)
-                except Exception as e:
-                    logger.warning("[snapshot][rebuild] unregister %s failed: %s", hex(ptr), e)
+                ret = old_engine.unregister_memory(ptr)
+                if ret != 0:
+                    raise RuntimeError(f"[snapshot] unregister {ptr:#x} failed: {ret}")
 
         # Fully destroy the old transfer engine before creating the replacement. In
         # particular, the local old_engine reference must be dropped before
@@ -1417,6 +1420,15 @@ class MooncakeLayerwiseConnectorWorker:
 
         del old_engine
         gc.collect()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        """Recreate the transport and registrations after model/graph restore."""
+        self.prepare_for_snapshot_restore()
+        self.side_channel_host = local_ip
+        self.tp_group = get_tp_group()
+        kv_cfg = self.vllm_config.kv_transfer_config
+        if kv_cfg is None or not (kv_cfg.is_kv_producer or kv_cfg.is_kv_consumer):
+            return
 
         # Create the replacement only after old transport finalization.
         self.engine = global_te.get_transfer_engine(local_ip, device_name=None)
@@ -1440,7 +1452,7 @@ class MooncakeLayerwiseConnectorWorker:
 
         # Restart the consumer listener only after the new transfer engine and registrations
         # are ready.
-        if not kv_cfg.is_kv_consumer or old_recv is None:
+        if not kv_cfg.is_kv_consumer or not self._restart_recv_after_snapshot:
             return
 
         ready_event = threading.Event()
