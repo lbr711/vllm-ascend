@@ -3392,7 +3392,7 @@ class TestMooncakeConnectorWorker(unittest.TestCase):
     def test_rebuild_stops_listener_and_destroys_old_engine_before_recreate(self):
         events = []
         old_engine = MagicMock()
-        old_engine.unregister_memory.side_effect = lambda _ptr: events.append("unregister")
+        old_engine.unregister_memory.side_effect = lambda _ptr: (events.append("unregister"), 0)[1]
         old_send = MagicMock()
         old_send.stop.side_effect = lambda: events.append("stop")
         old_send.join.side_effect = lambda timeout: events.append(f"join:{timeout}")
@@ -3423,6 +3423,10 @@ class TestMooncakeConnectorWorker(unittest.TestCase):
             patch(
                 "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector.global_te.reset",
                 side_effect=lambda: events.append("reset"),
+            ),
+            patch(
+                "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector.global_te.transfer_engine",
+                old_engine,
             ),
             patch(
                 "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector.global_te.get_transfer_engine",

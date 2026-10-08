@@ -102,6 +102,7 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
         patch("vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api") as call_aclrt,
         patch("vllm_ascend.snapshot.worker_lifecycle._reset_triton_kernel_caches") as reset_kernel_caches,
         patch("vllm_ascend.snapshot.worker_lifecycle._update_worker_info") as update_worker,
+        patch("vllm_ascend.snapshot.worker_lifecycle._prepare_kv_transfer_for_snapshot_restore") as prepare_kv,
         patch("vllm_ascend.snapshot.worker_lifecycle._rebuild_parallel_groups") as rebuild_parallel,
         patch("vllm_ascend.snapshot.worker_lifecycle.restore_model_runner") as restore_model,
         patch("vllm_ascend.snapshot.worker_lifecycle._recapture_graph") as recapture_graph,
@@ -117,6 +118,7 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
     ]
     reset_kernel_caches.assert_called_once_with()
     update_worker.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3")
+    prepare_kv.assert_called_once_with(worker)
     rebuild_parallel.assert_called_once_with(worker)
     restore_model.assert_called_once_with(worker.model_runner, "/tmp/model")
     recapture_graph.assert_called_once_with(worker)
