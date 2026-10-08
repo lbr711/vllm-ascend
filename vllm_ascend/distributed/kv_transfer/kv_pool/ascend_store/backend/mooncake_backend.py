@@ -349,8 +349,8 @@ class MooncakeBackend(Backend):
             raise NotImplementedError(f"MooncakeBackend does not support protocol {self.config.protocol!r}.")
         self._local_hostname = local_ip
 
-        # An independent store owns its TE; releasing the store above destroys
-        # that transport. Only the shared-TE path touches the global singleton.
+        # An independent store owns its engine; releasing the store above destroys
+        # that transport. Only the shared-engine path touches the global singleton.
         if not self._use_fabric_mem and not self._use_store_independent_te and global_te.hostname != local_ip:
             old_engine = global_te.transfer_engine
             if old_engine is not None and self._registered_buffers is not None:

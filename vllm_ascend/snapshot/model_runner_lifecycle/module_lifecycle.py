@@ -101,14 +101,25 @@ def _iter_modules_and_impls(models: Iterable[nn.Module | None]) -> Iterator[obje
                 yield item
 
 
+@torch.inference_mode()
 def reset_modules_runtime_state(models: Iterable[nn.Module | None]) -> int:
     """Reset runtime state held by target and drafter model modules.
 
     Hooks on a module and its backend implementation are dispatched centrally.
-    Shared objects are reset only once.
+    Shared objects are reset only once. Lazy buffers created in an inference
+    forward must also be updated under inference mode during restore.
     """
+    from vllm_ascend.attention.attention_c8_mxfp import (
+        AscendC8MXFPAttentionBackendImpl,
+        fill_mxfp_v_scale_cache,
+    )
+
     reset_count = 0
     for item in _iter_modules_and_impls(models):
+        if isinstance(getattr(item, "impl", None), AscendC8MXFPAttentionBackendImpl):
+            # Static V scales live in cache storage, outside the checkpoint.
+            # The source parameter has already been restored on target/draft.
+            fill_mxfp_v_scale_cache(item.v_cache_scale, item.kv_cache[3])
         reset = getattr(item, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset):
             reset()

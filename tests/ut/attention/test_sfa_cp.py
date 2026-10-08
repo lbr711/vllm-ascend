@@ -914,9 +914,12 @@ def test_sfa_dcp_builder_rebuilds_replicated_view_indices_after_restore() -> Non
     builder.dcp_collective_rank_order = torch.zeros(2, dtype=torch.int32)
     address = builder.dcp_collective_rank_order.data_ptr()
 
-    with patch.object(AscendSFAMetadataBuilder, "reset_runtime_state_after_snapshot_restore") as reset_base, patch(
-        "vllm_ascend.attention.context_parallel.sfa_cp.get_dcp_group",
-        return_value=SimpleNamespace(ranks=[4, 0]),
+    with (
+        patch.object(AscendSFAMetadataBuilder, "reset_runtime_state_after_snapshot_restore") as reset_base,
+        patch(
+            "vllm_ascend.attention.context_parallel.sfa_cp.get_dcp_group",
+            return_value=SimpleNamespace(ranks=[4, 0]),
+        ),
     ):
         builder.reset_runtime_state_after_snapshot_restore()
 

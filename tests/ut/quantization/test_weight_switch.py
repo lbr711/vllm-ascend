@@ -27,8 +27,8 @@ def test_snapshot_rebuilds_independent_copies_in_place(gather_dim):
         weight_switch_repeat_specs = (WeightSwitchRepeatSpec("scale"),)
 
     layer = torch.nn.Module()
-    layer.weight = torch.nn.Parameter(torch.arange(6.).reshape(2, 3), requires_grad=False)
-    layer.scale = torch.nn.Parameter(torch.tensor([2., 3.]), requires_grad=False)
+    layer.weight = torch.nn.Parameter(torch.arange(6.0).reshape(2, 3), requires_grad=False)
+    layer.scale = torch.nn.Parameter(torch.tensor([2.0, 3.0]), requires_grad=False)
     config = WeightSwitchConfig(object(), 2, 0, shard_axis="input")
     method = Method()
     state = method.enable_weight_switch(layer, config)

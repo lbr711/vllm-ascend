@@ -155,13 +155,15 @@ def test_v1_execution_map_checkpoint_round_trip(snapshot_enabled, has_map, tmp_p
         num_redundant_experts=0, dynamic_eplb=False, eplb_policy_type=0, expert_heat_collection_interval=1
     )
     prefix = "vllm_ascend.ops.fused_moe.routed_experts"
-    with patch(prefix + ".get_current_vllm_config", return_value=config), patch(
-        prefix + ".get_ascend_config", return_value=SimpleNamespace(eplb_config=eplb)
-    ), patch(prefix + ".make_eplb_placement_config", return_value=eplb), patch(
-        prefix + ".init_eplb_config", return_value=(None, mapping, None, 0)
-    ), patch(prefix + ".use_multistage_eplb_load", return_value=False), patch(
-        prefix + ".VllmEplbAdaptor.register_layer"
-    ), patch.object(torch.Tensor, "npu", lambda tensor: tensor, create=True):
+    with (
+        patch(prefix + ".get_current_vllm_config", return_value=config),
+        patch(prefix + ".get_ascend_config", return_value=SimpleNamespace(eplb_config=eplb)),
+        patch(prefix + ".make_eplb_placement_config", return_value=eplb),
+        patch(prefix + ".init_eplb_config", return_value=(None, mapping, None, 0)),
+        patch(prefix + ".use_multistage_eplb_load", return_value=False),
+        patch(prefix + ".VllmEplbAdaptor.register_layer"),
+        patch.object(torch.Tensor, "npu", lambda tensor: tensor, create=True),
+    ):
         layer.init_eplb(0)
     assert layer.ascend_expert_map is mapping
     assert ("_ascend_expert_map" in layer._buffers) == snapshot_enabled

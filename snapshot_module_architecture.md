@@ -740,14 +740,14 @@ flowchart LR
     subgraph InstanceA["DP 实例 A"]
         APIA[API Server]
         MonitorA[SnapshotMonitor]
-        ClientA[EngineCoreClient]
+        EngineClientA[EngineCoreClient]
         CoreA[EngineCore DP0]
         WorkerA[NPU Workers]
 
         APIA --> MonitorA
-        APIA --> ClientA
-        ClientA -->|IPC 控制请求| CoreA
-        CoreA -->|IPC 响应与 READY| ClientA
+        APIA --> EngineClientA
+        EngineClientA -->|IPC 控制请求| CoreA
+        CoreA -->|IPC 响应与 READY| EngineClientA
         CoreA --> WorkerA
     end
 

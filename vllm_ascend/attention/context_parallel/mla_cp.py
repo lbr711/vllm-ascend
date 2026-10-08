@@ -353,6 +353,14 @@ class AscendMlaDCPImpl(DCPImplMixin, AscendMLAImpl):
             torch.arange(max_tokens, dtype=torch.int64, device=device),
         )
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        # AscendMLAImpl has no runtime reset hook to delegate to.
+        self._refresh_dcp_group()
+        if self._dcp_current_kv_buffers is not None:
+            # Prolog overwrites current KV, but reads this constant index map.
+            indices = self._dcp_current_kv_buffers[2]
+            indices.copy_(torch.arange(indices.numel(), dtype=indices.dtype, device=indices.device))
+
     @staticmethod
     def update_graph_params(
         update_stream,

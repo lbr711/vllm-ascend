@@ -2251,16 +2251,16 @@ class MooncakeConnectorWorker:
             self.kv_send_thread = None
 
         # Synchronize the rotated ID only after the old producer listener has
-        # stopped, so it cannot expose new identity with stale TE metadata.
+        # stopped, so it cannot expose new identity with stale transfer metadata.
         if new_engine_id is not None:
             self._sync_engine_id_after_snapshot(new_engine_id)
 
-        # Detach all references to the old TE before resetting the singleton.
+        # Detach all references to the old transfer engine before resetting the singleton.
         self.engine = None
         if self.kv_recv_thread is not None:
             self.kv_recv_thread.engine = None
 
-        # Unregister all known regions while the old TE is still valid.
+        # Unregister all known regions while the old transfer engine is still valid.
         if old_engine is not None and self._registered_regions is not None:
             ptrs, _lengths = self._registered_regions
             for ptr in dict.fromkeys(ptrs):
@@ -2269,7 +2269,7 @@ class MooncakeConnectorWorker:
                 except Exception as e:
                     logger.warning("[snapshot][rebuild] unregister %s failed: %s", hex(ptr), e)
 
-        # Fully destroy the old TE before creating the replacement. In
+        # Fully destroy the old transfer engine before creating the replacement. In
         # particular, the local old_engine reference must be dropped before
         # gc.collect(); otherwise old and new Ascend transports coexist.
         global_te.reset()
@@ -2280,14 +2280,14 @@ class MooncakeConnectorWorker:
         self.engine = global_te.get_transfer_engine(local_ip, device_name=None)
         self.te_rpc_port = self.engine.get_rpc_port()
 
-        # Re-register KV memory with the replacement TE.
+        # Re-register KV memory with the replacement transfer engine.
         if self._registered_regions is not None:
             ptrs, lengths = self._registered_regions
             global_te.register_buffer(ptrs, lengths)
         else:
             logger.warning("[snapshot][rebuild] no cached register regions; KV memory not re-registered")
 
-        # Restart the producer listener only after the new TE and registrations
+        # Restart the producer listener only after the new engine and registrations
         # are ready.
         if kv_cfg.is_kv_producer and old_send is not None:
             metadata = self.xfer_handshake_metadata

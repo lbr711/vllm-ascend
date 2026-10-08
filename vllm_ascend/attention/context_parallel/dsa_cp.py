@@ -2287,6 +2287,10 @@ class AscendDSAPCPMetadataBuilder(dsa_v1.AscendDSAMetadataBuilder):
     # DualChunkSwap expands each prefill into at most two local rows.
     _request_capacity_factor: ClassVar[int] = 2
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        self._global_metadata_builder.reset_runtime_state_after_snapshot_restore()
+
     def __init__(
         self,
         kv_cache_spec: AscendMLAAttentionSpec,
@@ -2592,6 +2596,15 @@ class AscendDSAPCPImpl(dsa_v1.AscendDSAImpl):
 
     supports_pcp: ClassVar[bool] = True
     o_proj_full_pools: ClassVar[dict[Any, torch.Tensor]] = {}
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        super().reset_runtime_state_after_snapshot_restore()
+        self._pcp_o_proj_use_full_weight = False
+        if self.enable_pcp_o_proj_weight_sharding:
+            self.pcp_o_proj_weight_switch_config = WeightSwitchConfig.from_group(get_pcp_group())
+            if self._pcp_o_proj_weight_switches is not None:
+                for _, _, state in self._pcp_o_proj_weight_switches:
+                    state.rebuild_after_snapshot_restore(self.pcp_o_proj_weight_switch_config)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
