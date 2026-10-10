@@ -66,9 +66,9 @@ def test_get_acl_rt_lib_uses_cached_instance():
 
 def test_worker_snapshot_methods_delegate(worker):
     with (
-        patch("vllm_ascend.worker.worker.suspend_worker") as suspend,
-        patch("vllm_ascend.worker.worker.resume_worker") as resume,
-        patch("vllm_ascend.worker.worker.unlock_worker") as unlock,
+        patch("vllm_ascend.snapshot.worker_lifecycle.suspend_worker") as suspend,
+        patch("vllm_ascend.snapshot.worker_lifecycle.resume_worker") as resume,
+        patch("vllm_ascend.snapshot.worker_lifecycle.unlock_worker") as unlock,
     ):
         worker.suspend("/tmp/model")
         worker.resume("10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
