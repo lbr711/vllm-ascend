@@ -96,7 +96,6 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
 from vllm_ascend.distributed.parallel_state import init_ascend_model_parallel
 from vllm_ascend.ops.triton.triton_utils import init_device_properties_triton
 from vllm_ascend.profiler.torch_npu_profiler import TorchNPUProfilerWrapper
-from vllm_ascend.snapshot.worker_lifecycle import resume_worker, suspend_worker, unlock_worker
 from vllm_ascend.utils import (
     check_ascend_device_type,
     enable_custom_op,
@@ -839,21 +838,6 @@ class NPUWorker(WorkerBase):
         )
         return output
 
-    def suspend(self, model_save_path: str | None = None) -> None:
-        suspend_worker(self, model_save_path)
-
-    def device_unlock(self) -> None:
-        unlock_worker(self)
-
-    def resume(
-        self,
-        local_ip: str,
-        data_parallel_master_ip: str,
-        model_path: str | None = None,
-        new_engine_id: str | None = None,
-    ) -> None:
-        resume_worker(self, local_ip, data_parallel_master_ip, model_path, new_engine_id)
-
     def load_model(self) -> None:
         if self.vllm_config.model_config.enable_sleep_mode:
             allocator = CaMemAllocator.get_instance()
@@ -1291,6 +1275,27 @@ class NPUWorker(WorkerBase):
 
     def reload_weights(self, *args, **kwargs) -> None:
         self.model_runner.reload_weights(*args, **kwargs)
+
+    def suspend(self, model_save_path: str | None = None) -> None:
+        from vllm_ascend.snapshot.worker_lifecycle import suspend_worker
+
+        suspend_worker(self, model_save_path)
+
+    def device_unlock(self) -> None:
+        from vllm_ascend.snapshot.worker_lifecycle import unlock_worker
+
+        unlock_worker(self)
+
+    def resume(
+        self,
+        local_ip: str,
+        data_parallel_master_ip: str,
+        model_path: str | None = None,
+        new_engine_id: str | None = None,
+    ) -> None:
+        from vllm_ascend.snapshot.worker_lifecycle import resume_worker
+
+        resume_worker(self, local_ip, data_parallel_master_ip, model_path, new_engine_id)
 
     def check_health(self) -> None:
         import subprocess

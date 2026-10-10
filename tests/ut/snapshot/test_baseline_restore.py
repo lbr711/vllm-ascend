@@ -37,6 +37,24 @@ def load_nodes(path, names, namespace, methods=None):
     return namespace
 
 
+def test_worker_snapshot_entrypoints_delegate_with_lazy_imports(monkeypatch):
+    module_name = "vllm_ascend.snapshot.worker_lifecycle"
+    lifecycle = ModuleType(module_name)
+    lifecycle.suspend_worker = Mock()
+    lifecycle.unlock_worker = Mock()
+    lifecycle.resume_worker = Mock()
+    monkeypatch.setitem(sys.modules, module_name, lifecycle)
+    ns = {"Base": object}
+    load_nodes("worker/worker.py", ["NPUWorker"], ns, {"suspend", "device_unlock", "resume"})
+    worker = ns["NPUWorker"]()
+    worker.suspend("/tmp/model")
+    worker.device_unlock()
+    worker.resume("new-ip", "master-ip", "/tmp/model", "new-id")
+    lifecycle.suspend_worker.assert_called_once_with(worker, "/tmp/model")
+    lifecycle.unlock_worker.assert_called_once_with(worker)
+    lifecycle.resume_worker.assert_called_once_with(worker, "new-ip", "master-ip", "/tmp/model", "new-id")
+
+
 @pytest.mark.parametrize("fail_prepare", [False, True])
 def test_resume_releases_kv_transport_before_groups(fail_prepare):
     events = []
