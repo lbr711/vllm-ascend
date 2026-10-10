@@ -97,6 +97,9 @@ def resume_worker(
             "update_worker_network",
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
         ),
+        # Old HCCL QPs must release their references before KV transport frees
+        # the shared RDMA context. Finish both teardowns before creating groups.
+        ("destroy_parallel_groups", lambda: _parallel_group_cleanup(worker)),
         ("destroy_kv_transfer_endpoint", lambda: _prepare_kv_transfer_for_snapshot_restore(worker)),
         ("rebuild_parallel_groups", lambda: _rebuild_parallel_groups(worker)),
         ("restore_model_checkpoint", lambda: restore_model_runner(worker.model_runner, model_path)),
@@ -148,7 +151,6 @@ def _rebuild_parallel_groups(worker) -> None:
     dist.set_debug_level(dist.DebugLevel.INFO)
 
     rebuild_time_start = time.time()
-    _parallel_group_cleanup(worker)
 
     master_ip = worker.vllm_config.parallel_config.data_parallel_master_ip
     if not master_ip:

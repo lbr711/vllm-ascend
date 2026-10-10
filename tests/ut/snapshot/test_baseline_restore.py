@@ -55,19 +55,25 @@ def test_worker_snapshot_entrypoints_delegate_with_lazy_imports(monkeypatch):
     lifecycle.resume_worker.assert_called_once_with(worker, "new-ip", "master-ip", "/tmp/model", "new-id")
 
 
-@pytest.mark.parametrize("fail_prepare", [False, True])
-def test_resume_releases_kv_transport_before_groups(fail_prepare):
+@pytest.mark.parametrize("fail_stage", [None, "destroy_groups", "destroy_kv"])
+def test_resume_destroys_groups_then_kv_before_rebuilding(fail_stage):
     events = []
+
+    def cleanup(_worker):
+        events.append("destroy_groups")
+        if fail_stage == "destroy_groups":
+            raise RuntimeError("group teardown failed")
 
     def prepare(_worker):
         events.append("destroy_kv")
-        if fail_prepare:
+        if fail_stage == "destroy_kv":
             raise RuntimeError("transport teardown failed")
 
     ns = {
         "_call_aclrt_snapshot_api": lambda _, name: events.append(name),
         "_reset_triton_kernel_caches": lambda: None,
         "_update_worker_info": lambda *_: None,
+        "_parallel_group_cleanup": cleanup,
         "_prepare_kv_transfer_for_snapshot_restore": prepare,
         "_rebuild_parallel_groups": lambda _: events.append("groups"),
         "restore_model_runner": lambda *_: events.append("model"),
@@ -78,15 +84,19 @@ def test_resume_releases_kv_transport_before_groups(fail_prepare):
     }
     load_nodes("snapshot/worker_lifecycle.py", ["resume_worker", "_run_timed_steps"], ns)
     worker = SimpleNamespace(rank=0, model_runner=object())
-    if fail_prepare:
-        with pytest.raises(RuntimeError, match="transport teardown failed"):
+    if fail_stage is not None:
+        with pytest.raises(RuntimeError, match="teardown failed"):
             ns["resume_worker"](worker, "new-ip", "master-ip")
-        assert events == ["aclrtSnapShotProcessRestore", "aclrtSnapShotProcessUnlock", "destroy_kv"]
+        expected = ["aclrtSnapShotProcessRestore", "aclrtSnapShotProcessUnlock", "destroy_groups"]
+        if fail_stage == "destroy_kv":
+            expected.append("destroy_kv")
+        assert events == expected
     else:
         ns["resume_worker"](worker, "new-ip", "master-ip")
         assert events == [
             "aclrtSnapShotProcessRestore",
             "aclrtSnapShotProcessUnlock",
+            "destroy_groups",
             "destroy_kv",
             "groups",
             "model",
