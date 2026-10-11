@@ -3,6 +3,7 @@
 """Checkpoint and restore model module state."""
 
 import ctypes
+import fcntl
 import gc
 import os
 import time
@@ -16,15 +17,18 @@ from vllm_ascend.snapshot.model_runner_lifecycle.h2d_copy import copy_checkpoint
 
 
 def dump_state_dict(model: nn.Module, path: str) -> None:
-    if os.path.exists(path):
-        logger.debug(
-            "[snapshot][checkpoint] dump skipped: path=%s reason=already_exists",
-            path,
-        )
-        return
+    # Keep the lock file: unlinking it could let writers lock different inodes.
+    with open(f"{path}.lock", "a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if os.path.exists(path):
+            logger.debug(
+                "[snapshot][checkpoint] dump skipped: path=%s reason=already_exists",
+                path,
+            )
+            return
 
-    start = time.time()
-    torch.save(model.state_dict(), path)
+        start = time.time()
+        torch.save(model.state_dict(), path)
     gc.collect()
     torch.npu.empty_cache()
     try:

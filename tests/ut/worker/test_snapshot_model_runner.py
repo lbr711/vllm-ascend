@@ -57,7 +57,7 @@ def _make_runner(model, drafter_model):
     return SimpleNamespace(
         vllm_config=SimpleNamespace(
             use_v2_model_runner=True,
-            parallel_config=SimpleNamespace(tensor_parallel_size=8),
+            parallel_config=SimpleNamespace(tensor_parallel_size=8, pipeline_parallel_size=1),
             model_config=SimpleNamespace(model="/models/test-model"),
         ),
         model_config=SimpleNamespace(dtype=torch.bfloat16, hf_config=object()),
@@ -90,7 +90,7 @@ def test_restore_model_runner_restores_target_and_drafter(tmp_path):
     runner = _make_runner(model, drafter_model)
 
     with (
-        patch("vllm_ascend.snapshot.model_runner_lifecycle.restore.get_tp_group") as tp_group,
+        patch("vllm_ascend.snapshot.model_runner_lifecycle.checkpoint.get_tp_group") as tp_group,
         patch("vllm_ascend.snapshot.model_runner_lifecycle.restore._restore_model_checkpoint") as restore_one,
         patch(
             "vllm_ascend.snapshot.model_runner_lifecycle.restore._restore_model_runner_runtime_state"
@@ -152,7 +152,9 @@ def test_restore_model_runner_runtime_state_runs_all_phases():
 def test_restore_model_runner_runtime_state_dispatches_v1():
     model = torch.nn.Module()
     runner = SimpleNamespace(
-        vllm_config=SimpleNamespace(use_v2_model_runner=False),
+        vllm_config=SimpleNamespace(
+            use_v2_model_runner=False, parallel_config=SimpleNamespace(pipeline_parallel_size=1)
+        ),
         get_model=lambda: model,
     )
 
