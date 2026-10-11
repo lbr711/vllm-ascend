@@ -241,7 +241,7 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
             self.k_hadamard = hadamard / (128**0.5)
 
     def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
-        if not self.enable_sparse_li_c8:
+        if not self.enable_sparse_li_quant:
             return
         self.q_hadamard = None
         self.k_hadamard = None
