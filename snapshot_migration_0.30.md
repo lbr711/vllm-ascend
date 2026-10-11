@@ -86,3 +86,60 @@ Engram, and additional model-specific state are not certified for snapshot use
 by this migration. They require their own lifecycle audit and hardware tests
 before enabling them. An idle checkpoint does not by itself validate their
 device constants, handles, or background state.
+
+# Incremental PP snapshot support on `snapshot_0.30.0_eee24e2e`
+
+Scope: idle snapshots, unchanged model/quantization/DP/TP/PP topology and layer
+partition, with `MooncakeConnectorV1`. The [GLM5.2 PD example](https://docs.vllm.ai/projects/vllm-ascend-cn/zh-cn/latest/tutorials/models/GLM5.2.html) uses prefill PP=2
+and partition `41,37`; the connector still requires decode PP=1. This change
+does not enable unsupported cold-start combinations or migrate active requests.
+
+## Shared checkpoint directory
+
+- PP=1 retains its existing directory, filenames, checkpoint format and restore behavior.
+- PP>1 uses `{model}_dp{DP}_tp{TP}_pp{PP}/model_ckpt.{dp}tp{tp}pp{pp}.pth`.
+  Draft-model files use the `model_ckpt_drafter` prefix on stages owning a draft.
+- Instances with identical weights and topology share completed rank shards;
+  different DP/TP/PP ranks do not overwrite one another. Different weight
+  revisions or quantization configurations must use different snapshot roots.
+- All snapshot writers (PP=1 and PP>1) take an exclusive file lock on
+  `{path}.lock` before checking existence, holding it through `torch.save`.
+  Concurrent writers of the same shard wait and then skip the completed file;
+  different shard paths use independent locks. Lock files are kept, never
+  unlinked, so contenders always lock the same inode. Lock failures propagate.
+- Trade-off: no atomic-publication/strict-validation switches or hard links.
+  The shared filesystem must support cross-node file locks, and all writers
+  must use this protocol. A writer crash can still leave a partial checkpoint;
+  restore does not acquire this lock. Deployment must ensure successful writes
+  before restore and isolate different weights, quantization and layer partitions.
+
+## Inference-path audit and lifecycle actions
+
+| Owner / first consumer | Restore action |
+| --- | --- |
+| Stage-local embedding, decoder layers, norm/head and last-stage MTP | Separate PP rank shards; existing parameter/derived-tensor restoration applies to the real stage modules, not `PPMissingLayer` placeholders. |
+| Worker PP sends and coordinator-retained metadata/tensor sends | Drain native Work and synchronize before checkpoint. Never wait on restored Work handles. |
+| V1/V2 `intermediate_tensors`, read by non-first-stage warmup/capture before receiving real input | Zero all payload tensors in place before recapture, including hidden states, residual and optional auxiliary keys. Real requests overwrite their valid slices. |
+| V1 sampling and KV-output carry-over | Clear `execute_model_state`, previous sampled tokens, KV connector output and valid sampled-count tensor. Existing draft/request resets remain in place. |
+| V2 `PPHandler` sampled-token broadcasts | Abort/destroy its independently owned sibling group before global group and KV transport teardown; recreate after group initialization. Reset receive FIFO and request generations; rebind legacy spec-PP closures only if that protocol was installed. Preserve runtime-restored streams. |
+| Per-layer shared experts reading `moe_config` groups | Refresh target and draft layers' group references, not just the last configuration retained in the global MoE registry. Existing expert-map persistence and dispatcher reset remain in use. |
+| SFA/DSA metadata, quantized projection payloads, RoPE, block tables and draft buffers | Continue existing builder/module hooks on each stage before recapture; PP does not bypass them or reload weights through the cold-start path. |
+| Mooncake worker endpoint and scheduler handshake | EngineCore and every worker resolve their own current local IP once via `get_ip(force=True)` for both PP=1 and PP>1. Only the common master IP, checkpoint path and engine ID cross the resume RPC; unresolved local addresses fail explicitly. Existing endpoint rebuild republishes the `(pp_rank, tp_rank)` handshake entries and clears remote metadata caches. |
+| V2 default model-state attention metadata | Rebuilt by `prepare_attn` for dummy capture and real batches before use; stable model configuration and layer indices remain unchanged. |
+
+V2 non-last-stage dummy runs may leave `execute_model_state` without any live
+request. Snapshot preparation checks actual request count, not that leftover
+warmup object. This avoids rejecting clean snapshots after cold-start capture.
+
+The resume RPC no longer carries `local_ip`. Deploy the matching vLLM and
+vLLM-Ascend changes together; mixing old/new resume signatures is unsupported.
+
+Validation: 68 CPU contract tests in `tests/ut/snapshot/test_baseline_restore.py`
+passed with one CPU thread. They cover DP/TP/PP filename isolation, reuse of
+existing shards, cross-process write serialization (including a visible partial
+file), lock error propagation/release, target/draft round-trip, PP=1 gating, V1/V2
+runtime reset, independent-group lifetime, per-layer group aliases, and per-node
+IP selection. These tests do not validate NPU graph/HCCL execution or shared
+filesystem behavior on the deployment. Hardware acceptance still requires
+GLM5.2 PP=2 cold-start versus restore checks (short/long prompts and MTP), plus
+concurrent snapshot creation by multiple instances using the actual shared path.

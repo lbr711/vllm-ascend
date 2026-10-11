@@ -6,10 +6,15 @@ This tests tensor contents/ownership and hook dispatch, not NPU execution.
 """
 
 import ast
+import fcntl
 import math
+import multiprocessing
+import os
 import sys
 import weakref
+from collections import deque
 from collections.abc import Iterable, Iterator
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
@@ -37,6 +42,405 @@ def load_nodes(path, names, namespace, methods=None):
     return namespace
 
 
+def checkpoint_namespace():
+    ns = {
+        "os": os,
+        "fcntl": fcntl,
+        "nn": torch.nn,
+        "torch": SimpleNamespace(save=torch.save, load=torch.load, npu=Mock()),
+        "time": SimpleNamespace(time=lambda: 0),
+        "logger": Mock(),
+        "gc": SimpleNamespace(collect=lambda: None),
+        "ctypes": Mock(),
+        "copy_checkpoint_tensor": lambda dst, src: dst.copy_(src),
+    }
+    return load_nodes(
+        "snapshot/model_runner_lifecycle/module_lifecycle.py", ["dump_state_dict", "restore_state_dict"], ns
+    )
+
+
+def test_pp_checkpoint_paths_isolate_stages_but_share_between_instances():
+    tp, pp = SimpleNamespace(rank_in_group=0), SimpleNamespace(rank_in_group=0)
+    ns = {"os": os, "get_tp_group": lambda: tp, "get_pp_group": lambda: pp}
+    load_nodes("snapshot/model_runner_lifecycle/checkpoint.py", ["model_checkpoint_path"], ns)
+    config = SimpleNamespace(tensor_parallel_size=2, pipeline_parallel_size=2)
+    runner = SimpleNamespace(
+        dp_size=2,
+        dp_rank=0,
+        vllm_config=SimpleNamespace(parallel_config=config, model_config=SimpleNamespace(model="/models/glm/")),
+    )
+    paths = set()
+    for dp in range(2):
+        runner.dp_rank = dp
+        for tp.rank_in_group in range(2):
+            for pp.rank_in_group in range(2):
+                path = ns["model_checkpoint_path"](runner, "/shared")
+                paths.add(path)
+                assert path == ns["model_checkpoint_path"](SimpleNamespace(**vars(runner)), "/shared")
+                assert path != ns["model_checkpoint_path"](runner, "/shared", drafter=True)
+    assert len(paths) == 8
+    config.pipeline_parallel_size = 1
+    assert ns["model_checkpoint_path"](runner, "/shared") == "/shared/snapshot_weight/glm_dp2_tp2/model_ckpt.1tp1.pth"
+
+
+def test_pp_checkpoint_reuses_completed_shard_without_overwriting(tmp_path):
+    ns = checkpoint_namespace()
+    path = tmp_path / "stage.pth"
+    torch.save({"weight": torch.ones(2)}, path)
+    state_dict = Mock(side_effect=AssertionError("existing shard must not be overwritten"))
+    ns["dump_state_dict"](SimpleNamespace(state_dict=state_dict), str(path))
+    state_dict.assert_not_called()
+    torch.testing.assert_close(torch.load(path)["weight"], torch.ones(2))
+
+
+@pytest.mark.parametrize("partial_file", [False, True])
+def test_checkpoint_serializes_processes_before_check_and_through_save(tmp_path, partial_file):
+    # CPU-only, bounded fork workers; events control the race without sleeps.
+    ctx = multiprocessing.get_context("fork")
+    saving, blocked, release = (ctx.Event() for _ in range(3))
+    path = tmp_path / "stage.pth"
+
+    def first_writer():
+        ns = checkpoint_namespace()
+
+        def save(state, filename):
+            if partial_file:
+                path.write_bytes(b"incomplete checkpoint")
+            saving.set()
+            assert release.wait(15)
+            torch.save(state, filename)
+
+        ns["torch"].save = save
+        ns["dump_state_dict"](SimpleNamespace(state_dict=lambda: {"weight": torch.ones(2)}), str(path))
+
+    def second_writer():
+        ns = checkpoint_namespace()
+
+        def flock(fd, operation):
+            assert operation == fcntl.LOCK_EX
+            # The first writer must still hold the same file lock.
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, operation | fcntl.LOCK_NB)
+            blocked.set()
+            fcntl.flock(fd, operation)
+
+        ns["fcntl"] = SimpleNamespace(flock=flock, LOCK_EX=fcntl.LOCK_EX)
+        state_dict = Mock(side_effect=AssertionError("second writer must skip completed shard"))
+        ns["dump_state_dict"](SimpleNamespace(state_dict=state_dict), str(path))
+        state_dict.assert_not_called()
+        torch.testing.assert_close(torch.load(path)["weight"], torch.ones(2))
+
+    processes = []
+    try:
+        first = ctx.Process(target=first_writer)
+        first.start()
+        processes.append(first)
+        assert saving.wait(15)
+        second = ctx.Process(target=second_writer)
+        second.start()
+        processes.append(second)
+        assert blocked.wait(15)
+        release.set()
+        for process in processes:
+            process.join(15)
+            assert process.exitcode == 0
+    finally:
+        release.set()
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+    assert Path(f"{path}.lock").exists()
+
+
+def test_checkpoint_releases_lock_on_save_failure(tmp_path):
+    ns = checkpoint_namespace()
+    path = tmp_path / "stage.pth"
+    ns["torch"].save = Mock(side_effect=OSError("save failed"))
+    with pytest.raises(OSError, match="save failed"):
+        ns["dump_state_dict"](SimpleNamespace(state_dict=lambda: {}), str(path))
+    with open(f"{path}.lock", "a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_checkpoint_does_not_fallback_when_lock_fails(tmp_path):
+    ns = checkpoint_namespace()
+    ns["fcntl"] = SimpleNamespace(flock=Mock(side_effect=OSError("lock unsupported")), LOCK_EX=fcntl.LOCK_EX)
+    model = SimpleNamespace(state_dict=Mock())
+    with pytest.raises(OSError, match="lock unsupported"):
+        ns["dump_state_dict"](model, str(tmp_path / "stage.pth"))
+    model.state_dict.assert_not_called()
+
+
+def pipeline_namespace(group):
+    ns = {"torch": torch, "get_pp_group": lambda: group, "_refresh_pipeline_moe_groups": Mock()}
+    return load_nodes(
+        "snapshot/pipeline.py",
+        ["prepare_pipeline_for_snapshot", "destroy_pipeline_runtime", "restore_pipeline_runtime"],
+        ns,
+    )
+
+
+@pytest.mark.parametrize("v2", [False, True])
+def test_pp_snapshot_drains_native_work_before_checkpoint(monkeypatch, v2):
+    synchronize = Mock()
+    monkeypatch.setattr(torch, "npu", SimpleNamespace(synchronize=synchronize), raising=False)
+    send, retained = Mock(), Mock()
+    group = SimpleNamespace(_reap_completed_isends=Mock(), _pending_isends=deque([([retained], [object()])]))
+    runner = SimpleNamespace(
+        input_batch=SimpleNamespace(num_reqs=0), req_states=SimpleNamespace(num_reqs=0), execute_model_state=object()
+    )
+    worker = SimpleNamespace(
+        model_runner=runner, _pp_send_work=[send], vllm_config=SimpleNamespace(use_v2_model_runner=v2)
+    )
+    ns = pipeline_namespace(group)
+    ns["prepare_pipeline_for_snapshot"](worker)
+    send.wait.assert_called_once()
+    retained.wait.assert_called_once()
+    synchronize.assert_called_once()
+    assert not worker._pp_send_work and not group._pending_isends
+    # Non-last V2 warmup leaves execute_model_state, but no real requests.
+    runner.input_batch.num_reqs = runner.req_states.num_reqs = 1
+    with pytest.raises(RuntimeError, match="idle runner"):
+        ns["prepare_pipeline_for_snapshot"](worker)
+
+
+@pytest.mark.parametrize("v2,last", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("legacy_spec_pp", [False, True])
+def test_pp_restore_resets_buffers_and_rebinds_v2_group_and_spec_closures(monkeypatch, v2, last, legacy_spec_pp):
+    group = SimpleNamespace(is_last_rank=last, last_rank=3, world_size=2, make_sibling_device_group=Mock())
+    ns = pipeline_namespace(group)
+    protocol = ModuleType("vllm_ascend.patch.worker.patch_v2.patch_spec_pp")
+    protocol._INSTALLED = "_vllm_ascend_upstream_spec_pp_installed"
+    load_nodes("patch/worker/patch_v2/patch_spec_pp.py", ["install_upstream_spec_pp_protocol"], vars(protocol))
+    monkeypatch.setitem(sys.modules, protocol.__name__, protocol)
+    # Use inference tensors to catch illegal in-place reset outside inference_mode.
+    with torch.inference_mode():
+        hidden, residual = torch.ones(8, 4), torch.ones(8, 4)
+    handler = SimpleNamespace(
+        queue=deque([object()]),
+        req_idx_gen_np=np.ones(2),
+        device="cpu",
+        main_stream=object(),
+        broadcast_stream=object(),
+    )
+    setattr(handler, protocol._INSTALLED, True)
+    old_broadcast = handler.broadcast_drafts = Mock(side_effect=AssertionError("stale closure"))
+    runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(use_v2_model_runner=v2),
+        intermediate_tensors=SimpleNamespace(tensors={"hidden_states": hidden, "residual": residual}),
+        execute_model_state=object(),
+        pp_handler=handler,
+        input_batch=SimpleNamespace(prev_sampled_token_ids=object()),
+        kv_connector_output=object(),
+        valid_sampled_token_count_gpu=object(),
+        req_states=object(),
+        num_speculative_steps=3,
+        use_spec_pp=legacy_spec_pp,
+    )
+    ptrs = hidden.data_ptr(), residual.data_ptr()
+    ns["restore_pipeline_runtime"](runner)
+    ns["_refresh_pipeline_moe_groups"].assert_called_once_with(runner)
+    assert ptrs == (hidden.data_ptr(), residual.data_ptr())
+    assert not hidden.any() and not residual.any() and runner.execute_model_state is None
+    if v2:
+        group.make_sibling_device_group.assert_called_once_with(group_desc="pp_broadcast")
+        assert handler.broadcast_group is group.make_sibling_device_group.return_value
+        assert list(handler.queue) == ([] if last else [None, None])
+        assert not handler.req_idx_gen_np.any()
+        assert (handler.broadcast_drafts is not old_broadcast) == legacy_spec_pp
+        # A fresh closure has no previous InputBatch: no device access or broadcast.
+        if last and legacy_spec_pp:
+            handler.broadcast_drafts()
+    else:
+        group.make_sibling_device_group.assert_not_called()
+        assert runner.input_batch.prev_sampled_token_ids is None
+        assert runner.kv_connector_output is None and runner.valid_sampled_token_count_gpu is None
+
+
+@pytest.mark.parametrize("ep_size", [1, 2])
+def test_pp_refreshes_each_layers_moe_group_aliases_including_drafter(monkeypatch, ep_size):
+    class MoERunner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.moe_config = SimpleNamespace(ep_size=ep_size, tp_group=object(), dp_group=object())
+            self.shared_experts = SimpleNamespace(moe_config=self.moe_config)
+
+    tp, dp, ep, mc2 = object(), object(), object(), object()
+    target, draft = torch.nn.Sequential(MoERunner(), MoERunner()), torch.nn.Sequential(MoERunner())
+    imports = {
+        "vllm.distributed.parallel_state": {
+            "get_tp_group": lambda: tp,
+            "get_dp_group": lambda: dp,
+            "get_ep_group": lambda: ep,
+        },
+        "vllm_ascend.distributed.parallel_state": {"get_mc2_group": lambda: mc2},
+        "vllm_ascend.ops.fused_moe.fused_moe": {"AscendMoERunner": MoERunner},
+        "vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle": {"get_drafter_model": lambda _: draft},
+    }
+    for name, attributes in imports.items():
+        module = ModuleType(name)
+        vars(module).update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+    ns = load_nodes("snapshot/pipeline.py", ["_refresh_pipeline_moe_groups"], {})
+    ns["_refresh_pipeline_moe_groups"](SimpleNamespace(get_model=lambda: target))
+    for model in (target, draft):
+        for layer in model:
+            config = layer.shared_experts.moe_config
+            assert config is layer.moe_config
+            assert config.tp_group is tp and config.dp_group is dp
+            if ep_size > 1:
+                assert config.ep_group is ep and config.mc2_group is mc2
+            else:
+                assert not hasattr(config, "ep_group") and not hasattr(config, "mc2_group")
+
+
+def test_pp_v2_destroys_sibling_without_waiting_on_restored_work(monkeypatch):
+    abort = ModuleType("vllm_ascend.patch.worker.patch_distributed")
+    abort._abort_hccl_process_group = Mock()
+    monkeypatch.setitem(sys.modules, abort.__name__, abort)
+    destroy = Mock()
+    monkeypatch.setattr(torch.distributed, "destroy_process_group", destroy)
+    old = object()
+    handler = SimpleNamespace(broadcast_group=old, queue=deque([object()]))
+    work = Mock()
+    worker = SimpleNamespace(
+        vllm_config=SimpleNamespace(use_v2_model_runner=True),
+        _pp_send_work=[work],
+        model_runner=SimpleNamespace(pp_handler=handler),
+    )
+    pipeline_namespace(None)["destroy_pipeline_runtime"](worker)
+    abort._abort_hccl_process_group.assert_called_once_with(old)
+    destroy.assert_called_once_with(old)
+    work.wait.assert_not_called()
+    assert handler.broadcast_group is None and not handler.queue and not worker._pp_send_work
+
+
+@pytest.mark.parametrize("pp_size", [1, 2])
+def test_pp_hooks_are_snapshot_only_and_ordered(monkeypatch, pp_size):
+    events = []
+    pipeline = ModuleType("vllm_ascend.snapshot.pipeline")
+    pipeline.prepare_pipeline_for_snapshot = lambda _: events.append("drain")
+    pipeline.destroy_pipeline_runtime = lambda _: events.append("destroy_pp")
+    pipeline.restore_pipeline_runtime = lambda _: events.append("restore_pp")
+    monkeypatch.setitem(sys.modules, pipeline.__name__, pipeline)
+    ns = {
+        "time": SimpleNamespace(perf_counter=lambda: 0),
+        "logger": Mock(),
+        "gc": SimpleNamespace(collect=lambda: None),
+        "dump_model_runner": lambda *_: events.append("dump"),
+        "_call_aclrt_snapshot_api": lambda _, name: events.append(name),
+        "snapshot_hccl_teardown": lambda _: nullcontext(),
+        "destroy_ascend_model_parallel": lambda: events.append("destroy_ascend"),
+        "cleanup_dist_env_for_snapshot": lambda: events.append("destroy_dist"),
+    }
+    load_nodes("snapshot/worker_lifecycle.py", ["suspend_worker", "_parallel_group_cleanup", "_run_timed_steps"], ns)
+    worker = SimpleNamespace(
+        rank=0,
+        model_runner=object(),
+        vllm_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(pipeline_parallel_size=pp_size), snapshot_config=object()
+        ),
+    )
+    ns["suspend_worker"](worker)
+    assert events == (["drain"] if pp_size > 1 else []) + [
+        "dump",
+        "aclrtSnapShotProcessLock",
+        "aclrtSnapShotProcessBackup",
+    ]
+    events.clear()
+    ns["_parallel_group_cleanup"](worker)
+    assert events == (["destroy_pp"] if pp_size > 1 else []) + ["destroy_ascend", "destroy_dist"]
+    events.clear()
+    ns.update(
+        {
+            "reload_cos_and_sin_after_restore": lambda _: None,
+            "reset_moe_padding_cache_after_snapshot_restore": lambda: None,
+            "_reset_v1_runner_runtime_state": lambda _: events.append("runner"),
+            "_reset_target_and_drafter_modules_after_restore": lambda _: events.append("modules"),
+        }
+    )
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_restore_model_runner_runtime_state"], ns)
+    runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(parallel_config=worker.vllm_config.parallel_config, use_v2_model_runner=False),
+        get_model=lambda: object(),
+    )
+    ns["_restore_model_runner_runtime_state"](runner)
+    assert events == ["runner", "modules"] + (["restore_pp"] if pp_size > 1 else [])
+
+
+@pytest.mark.parametrize("pp_size", [1, 2])
+@pytest.mark.parametrize("ip", ["10.0.0.2", "2001:db8::2", "", "0.0.0.0", "::"])
+def test_resume_resolves_worker_ip_for_all_parallel_configurations(pp_size, ip):
+    ns = {
+        name: Mock()
+        for name in (
+            "_call_aclrt_snapshot_api",
+            "_reset_triton_kernel_caches",
+            "_update_worker_info",
+            "_parallel_group_cleanup",
+            "_prepare_kv_transfer_for_snapshot_restore",
+            "_rebuild_parallel_groups",
+            "restore_model_runner",
+            "_recapture_graph",
+            "_rebuild_kv_transfer_engine",
+        )
+    }
+    ns.update({"get_ip": Mock(return_value=ip), "time": SimpleNamespace(perf_counter=lambda: 0), "logger": Mock()})
+    load_nodes("snapshot/worker_lifecycle.py", ["resume_worker", "_run_timed_steps"], ns)
+    worker = SimpleNamespace(
+        rank=0,
+        model_runner=object(),
+        vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(pipeline_parallel_size=pp_size)),
+    )
+    if ip in ("", "0.0.0.0", "::"):
+        with pytest.raises(RuntimeError, match="local worker IP"):
+            ns["resume_worker"](worker, "master", "/shared", "new-id")
+        ns["_call_aclrt_snapshot_api"].assert_not_called()
+        ns["_rebuild_kv_transfer_engine"].assert_not_called()
+    else:
+        ns["resume_worker"](worker, "master", "/shared", "new-id")
+        ns["_update_worker_info"].assert_called_once_with(worker, ip, "master")
+        ns["_rebuild_kv_transfer_engine"].assert_called_once_with(worker, ip, "new-id")
+    ns["get_ip"].assert_called_once_with(force=True)
+
+
+@pytest.mark.parametrize("last", [False, True])
+def test_pp_target_and_last_stage_drafter_checkpoint_roundtrip(tmp_path, last):
+    ns = checkpoint_namespace()
+    model, draft = torch.nn.Linear(2, 2), torch.nn.Linear(2, 2) if last else None
+    ns.update(
+        {
+            "get_tp_group": lambda: SimpleNamespace(rank_in_group=0),
+            "get_pp_group": lambda: SimpleNamespace(rank_in_group=int(last)),
+            "get_drafter_model": lambda runner: draft,
+            "_restore_model_runner_runtime_state": Mock(),
+            "rebuild_model_derived_tensors_after_snapshot_restore": Mock(),
+        }
+    )
+    load_nodes("snapshot/model_runner_lifecycle/checkpoint.py", ["model_checkpoint_path", "dump_model_runner"], ns)
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["restore_model_runner", "_restore_model_checkpoint"], ns)
+    runner = SimpleNamespace(
+        dp_size=1,
+        dp_rank=0,
+        get_model=lambda: model,
+        model_config=SimpleNamespace(dtype=torch.float32),
+        vllm_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(tensor_parallel_size=2, pipeline_parallel_size=2),
+            model_config=SimpleNamespace(model="glm"),
+        ),
+    )
+    originals = [m.weight.clone() for m in (model, draft) if m is not None]
+    ns["dump_model_runner"](runner, str(tmp_path))
+    for m in (model, draft):
+        if m is not None:
+            m.weight.data.zero_()
+    ns["restore_model_runner"](runner, str(tmp_path))
+    for m, weight in zip((m for m in (model, draft) if m is not None), originals):
+        torch.testing.assert_close(m.weight, weight)
+    assert len(list(tmp_path.rglob("*.pth"))) == 1 + int(last)
+
+
 def test_worker_snapshot_entrypoints_delegate_with_lazy_imports(monkeypatch):
     module_name = "vllm_ascend.snapshot.worker_lifecycle"
     lifecycle = ModuleType(module_name)
@@ -49,10 +453,10 @@ def test_worker_snapshot_entrypoints_delegate_with_lazy_imports(monkeypatch):
     worker = ns["NPUWorker"]()
     worker.suspend("/tmp/model")
     worker.device_unlock()
-    worker.resume("new-ip", "master-ip", "/tmp/model", "new-id")
+    worker.resume("master-ip", "/tmp/model", "new-id")
     lifecycle.suspend_worker.assert_called_once_with(worker, "/tmp/model")
     lifecycle.unlock_worker.assert_called_once_with(worker)
-    lifecycle.resume_worker.assert_called_once_with(worker, "new-ip", "master-ip", "/tmp/model", "new-id")
+    lifecycle.resume_worker.assert_called_once_with(worker, "master-ip", "/tmp/model", "new-id")
 
 
 @pytest.mark.parametrize("fail_stage", [None, "destroy_groups", "destroy_kv"])
@@ -70,6 +474,7 @@ def test_resume_destroys_groups_then_kv_before_rebuilding(fail_stage):
             raise RuntimeError("transport teardown failed")
 
     ns = {
+        "get_ip": lambda **_: "new-ip",
         "_call_aclrt_snapshot_api": lambda _, name: events.append(name),
         "_reset_triton_kernel_caches": lambda: None,
         "_update_worker_info": lambda *_: None,
@@ -83,16 +488,20 @@ def test_resume_destroys_groups_then_kv_before_rebuilding(fail_stage):
         "logger": Mock(),
     }
     load_nodes("snapshot/worker_lifecycle.py", ["resume_worker", "_run_timed_steps"], ns)
-    worker = SimpleNamespace(rank=0, model_runner=object())
+    worker = SimpleNamespace(
+        rank=0,
+        model_runner=object(),
+        vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(pipeline_parallel_size=1)),
+    )
     if fail_stage is not None:
         with pytest.raises(RuntimeError, match="teardown failed"):
-            ns["resume_worker"](worker, "new-ip", "master-ip")
+            ns["resume_worker"](worker, "master-ip")
         expected = ["aclrtSnapShotProcessRestore", "aclrtSnapShotProcessUnlock", "destroy_groups"]
         if fail_stage == "destroy_kv":
             expected.append("destroy_kv")
         assert events == expected
     else:
-        ns["resume_worker"](worker, "new-ip", "master-ip")
+        ns["resume_worker"](worker, "master-ip")
         assert events == [
             "aclrtSnapShotProcessRestore",
             "aclrtSnapShotProcessUnlock",
