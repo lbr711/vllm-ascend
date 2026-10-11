@@ -1329,14 +1329,13 @@ class NPUWorker(WorkerBase):
 
     def resume(
         self,
-        local_ip: str,
         data_parallel_master_ip: str,
         model_path: str | None = None,
         new_engine_id: str | None = None,
     ) -> None:
         from vllm_ascend.snapshot.worker_lifecycle import resume_worker
 
-        resume_worker(self, local_ip, data_parallel_master_ip, model_path, new_engine_id)
+        resume_worker(self, data_parallel_master_ip, model_path, new_engine_id)
 
     def check_health(self) -> None:
         import subprocess
