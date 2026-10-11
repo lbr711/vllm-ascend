@@ -94,10 +94,14 @@ class TurboQuantLatent:
         if self.rotation is None:
             return
         # These constants are owned by a plain helper, not the model state_dict.
-        restored = TurboQuantLatent()
-        restored._initialize(self.rotation.device)
+        # Bypass the legacy cache: its shared tensors also survived the snapshot
+        # with stale device contents. Refill them in place for all existing aliases.
+        restored = TurboQuantLatent(legacy_hadamard=self._legacy_hadamard)
+        restored._initialize_transforms(self.rotation.device)
         for name in ("rotation", "centroids", "norm_lut"):
             getattr(self, name).copy_(getattr(restored, name))
+        if self.inverse_rotation is not None:
+            self.inverse_rotation.copy_(restored.rotation.T)
 
     def forward(self, x):
         self._initialize(x.device)

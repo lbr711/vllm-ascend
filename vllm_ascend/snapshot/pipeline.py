@@ -46,8 +46,10 @@ def restore_pipeline_runtime(runner) -> None:
     # Dummy runs read these buffers before any receive fills them. Preserve
     # storage and all auxiliary payload keys for graph capture and real receives.
     if runner.intermediate_tensors is not None:
-        for tensor in runner.intermediate_tensors.tensors.values():
-            tensor.zero_()
+        for name, tensor in runner.intermediate_tensors.tensors.items():
+            # PP top-k payloads alias the model's index buffer, whose empty
+            # sentinel is -1, not a valid cache index such as zero.
+            tensor.fill_(-1 if name.startswith("pp_transport_topk_indices_") else 0)
 
     if not runner.vllm_config.use_v2_model_runner:
         runner.input_batch.prev_sampled_token_ids = None
