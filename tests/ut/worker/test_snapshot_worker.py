@@ -46,6 +46,7 @@ def worker(npu_worker_cls):
             is_kv_consumer=True,
         ),
         parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
             data_parallel_master_ip="1.1.1.1",
             _snapshot_data_parallel_port_list=[29502],
         ),
@@ -71,11 +72,11 @@ def test_worker_snapshot_methods_delegate(worker):
         patch("vllm_ascend.snapshot.worker_lifecycle.unlock_worker") as unlock,
     ):
         worker.suspend("/tmp/model")
-        worker.resume("10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+        worker.resume("10.0.0.3", "/tmp/model", "engine-id")
         worker.device_unlock()
 
     suspend.assert_called_once_with(worker, "/tmp/model")
-    resume.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+    resume.assert_called_once_with(worker, "10.0.0.3", "/tmp/model", "engine-id")
     unlock.assert_called_once_with(worker)
 
 
@@ -99,6 +100,7 @@ def test_snapshot_suspend_runs_npu_snapshot_sequence(worker):
 
 def test_snapshot_resume_runs_npu_restore_phases(worker):
     with (
+        patch("vllm_ascend.snapshot.worker_lifecycle.get_ip", return_value="10.0.0.2") as get_ip,
         patch("vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api") as call_aclrt,
         patch("vllm_ascend.snapshot.worker_lifecycle._reset_triton_kernel_caches") as reset_kernel_caches,
         patch("vllm_ascend.snapshot.worker_lifecycle._update_worker_info") as update_worker,
@@ -111,8 +113,9 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
     ):
         from vllm_ascend.snapshot.worker_lifecycle import resume_worker
 
-        resume_worker(worker, "10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+        resume_worker(worker, "10.0.0.3", "/tmp/model", "engine-id")
 
+    get_ip.assert_called_once_with(force=True)
     assert [call.args[1] for call in call_aclrt.call_args_list] == [
         "aclrtSnapShotProcessRestore",
         "aclrtSnapShotProcessUnlock",
