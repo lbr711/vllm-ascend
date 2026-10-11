@@ -2,14 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import os
 
 import torch
 import torch.nn as nn
-from vllm.distributed.parallel_state import get_tp_group
 
 from vllm_ascend.ops.fused_moe.moe_utils import reset_moe_padding_cache_after_snapshot_restore
 from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
+from vllm_ascend.snapshot.model_runner_lifecycle.checkpoint import model_checkpoint_path
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     get_drafter_model,
     rebuild_model_derived_tensors_after_snapshot_restore,
@@ -26,19 +25,11 @@ def _restore_model_checkpoint(runner, model: nn.Module, model_save_path: str, la
 
 
 def restore_model_runner(runner, path: str = "/mnt") -> None:
-    tp_size = runner.vllm_config.parallel_config.tensor_parallel_size
-    model_name = runner.vllm_config.model_config.model.rstrip("/").rsplit("/", 1)[-1]
-    model_dir = os.path.join(
-        path,
-        "snapshot_weight",
-        f"{model_name}_dp{runner.dp_size}_tp{tp_size}",
-    )
-    rank_in_group = get_tp_group().rank_in_group
     model = runner.get_model()
     _restore_model_checkpoint(
         runner,
         model,
-        os.path.join(model_dir, f"model_ckpt.{runner.dp_rank}tp{rank_in_group}.pth"),
+        model_checkpoint_path(runner, path),
         "model",
     )
     drafter_model = get_drafter_model(runner)
@@ -46,7 +37,7 @@ def restore_model_runner(runner, path: str = "/mnt") -> None:
         _restore_model_checkpoint(
             runner,
             drafter_model,
-            os.path.join(model_dir, f"model_ckpt_drafter.{runner.dp_rank}tp{rank_in_group}.pth"),
+            model_checkpoint_path(runner, path, drafter=True),
             "drafter",
         )
 
@@ -66,6 +57,10 @@ def _restore_model_runner_runtime_state(runner) -> None:
     else:
         _reset_v1_runner_runtime_state(runner)
     _reset_target_and_drafter_modules_after_restore(runner)
+    if runner.vllm_config.parallel_config.pipeline_parallel_size > 1:
+        from vllm_ascend.snapshot.pipeline import restore_pipeline_runtime
+
+        restore_pipeline_runtime(runner)
 
 
 def _reset_input_buffers(buffers) -> None:
