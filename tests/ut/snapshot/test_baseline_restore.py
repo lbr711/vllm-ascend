@@ -15,6 +15,7 @@ import weakref
 from collections import deque
 from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
+from functools import cache
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
@@ -217,6 +218,7 @@ def test_pp_restore_resets_buffers_and_rebinds_v2_group_and_spec_closures(monkey
     # Use inference tensors to catch illegal in-place reset outside inference_mode.
     with torch.inference_mode():
         hidden, residual = torch.ones(8, 4), torch.ones(8, 4)
+        topk = torch.full((8, 4), 42, dtype=torch.int32)
     handler = SimpleNamespace(
         queue=deque([object()]),
         req_idx_gen_np=np.ones(2),
@@ -228,7 +230,9 @@ def test_pp_restore_resets_buffers_and_rebinds_v2_group_and_spec_closures(monkey
     old_broadcast = handler.broadcast_drafts = Mock(side_effect=AssertionError("stale closure"))
     runner = SimpleNamespace(
         vllm_config=SimpleNamespace(use_v2_model_runner=v2),
-        intermediate_tensors=SimpleNamespace(tensors={"hidden_states": hidden, "residual": residual}),
+        intermediate_tensors=SimpleNamespace(
+            tensors={"hidden_states": hidden, "residual": residual, "pp_transport_topk_indices_0": topk[:8]}
+        ),
         execute_model_state=object(),
         pp_handler=handler,
         input_batch=SimpleNamespace(prev_sampled_token_ids=object()),
@@ -243,6 +247,7 @@ def test_pp_restore_resets_buffers_and_rebinds_v2_group_and_spec_closures(monkey
     ns["_refresh_pipeline_moe_groups"].assert_called_once_with(runner)
     assert ptrs == (hidden.data_ptr(), residual.data_ptr())
     assert not hidden.any() and not residual.any() and runner.execute_model_state is None
+    assert torch.all(topk == -1)  # PP payload aliases the model-owned buffer.
     if v2:
         group.make_sibling_device_group.assert_called_once_with(group_desc="pp_broadcast")
         assert handler.broadcast_group is group.make_sibling_device_group.return_value
@@ -721,17 +726,31 @@ def test_snapshot_multi_connector_releases_shared_engine_then_reuses_replacement
     assert worker.engine is transfer_engine_manager.transfer_engine is pool.store.engine is peer.engine
 
 
-def test_turboquant_restore_preserves_contents_and_addresses():
+@pytest.mark.parametrize("legacy", [False, True])
+def test_turboquant_restore_preserves_contents_and_addresses(legacy):
     path = ROOT / "quantization/methods/kv_cache/turboquant/latent.py"
     tree = ast.parse(path.read_text())
     centroids = next(n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "CENTROIDS")
-    ns = {"torch": torch, "np": np, "math": math, "HEAD_DIM": 512, "CENTROIDS": ast.literal_eval(centroids.value)}
-    load_nodes(str(path.relative_to(ROOT)), ["TurboQuantLatent"], ns)
-    latent = ns["TurboQuantLatent"]()
+    samples = next(
+        n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "_LEGACY_LLOYD_MAX_SAMPLE_COUNT"
+    )
+    ns = {
+        "torch": torch,
+        "np": np,
+        "math": math,
+        "cache": cache,
+        "HEAD_DIM": 512,
+        "CENTROIDS": ast.literal_eval(centroids.value),
+        "_LEGACY_LLOYD_MAX_SAMPLE_COUNT": ast.literal_eval(samples.value),
+    }
+    load_nodes(str(path.relative_to(ROOT)), ["TurboQuantLatent", "_get_legacy_transforms"], ns)
+    latent = ns["TurboQuantLatent"](legacy_hadamard=legacy)
     getattr(latent, HOOK)()
     assert latent.rotation is None
     latent._initialize(torch.device("cpu"))
-    names = ("rotation", "centroids", "norm_lut")
+    names = ("rotation", "centroids", "norm_lut") + (("inverse_rotation",) if legacy else ())
+    sibling = ns["TurboQuantLatent"](legacy_hadamard=legacy)
+    sibling._initialize(torch.device("cpu"))
     original = {name: getattr(latent, name).clone() for name in names}
     addresses = {name: getattr(latent, name).data_ptr() for name in names}
     for _ in range(2):
@@ -741,6 +760,149 @@ def test_turboquant_restore_preserves_contents_and_addresses():
         for name in names:
             torch.testing.assert_close(getattr(latent, name), original[name], rtol=0, atol=0)
             assert getattr(latent, name).data_ptr() == addresses[name]
+    if legacy:
+        # Both already-initialized and later-created layers use the same cache.
+        later = ns["TurboQuantLatent"](legacy_hadamard=True)
+        later._initialize(torch.device("cpu"))
+        for owner in (sibling, later):
+            for name in names:
+                assert getattr(owner, name) is getattr(latent, name)
+                torch.testing.assert_close(getattr(owner, name), original[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("c8,c4", [(False, False), (True, False), (False, True)])
+def test_indexer_restores_hadamard_for_both_quantization_paths(c8, c4):
+    ns = {"Base": object, "torch": torch}
+    load_nodes(
+        "attention/indexer.py",
+        ["AscendSFAIndexerBackend"],
+        ns,
+        {"enable_sparse_li_quant", "rebuild_derived_tensors_after_snapshot_restore"},
+    )
+    backend = ns["AscendSFAIndexerBackend"]()
+    backend.enable_sparse_li_c8, backend.enable_sparse_li_c4 = c8, c4
+    old = backend.q_hadamard = backend.k_hadamard = torch.zeros(2)
+
+    def rebuild():
+        assert backend.q_hadamard is None and backend.k_hadamard is None
+        backend.q_hadamard = backend.k_hadamard = torch.ones(2)
+
+    backend.process_weights_after_loading = Mock(side_effect=rebuild)
+    for _ in range(2):
+        backend.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
+    assert backend.process_weights_after_loading.call_count == (2 if c8 or c4 else 0)
+    if not (c8 or c4):
+        assert backend.q_hadamard is old
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_sfa_restores_nested_turboquant_helper(enabled):
+    ns = {"Base": object, "PreprocessType": SimpleNamespace(PROLOG_V3=object())}
+    load_nodes("attention/sfa_v1.py", ["AscendSFAImpl"], ns, {HOOK})
+    impl = ns["AscendSFAImpl"]()
+    impl.topk_indices_buffer = torch.zeros(2, dtype=torch.int32)
+    impl.turboquant = Mock() if enabled else None
+    impl.preprocess_type = None
+    getattr(impl, HOOK)()
+    assert torch.all(impl.topk_indices_buffer == -1)
+    if enabled:
+        impl.turboquant.reset_runtime_state_after_snapshot_restore.assert_called_once()
+
+
+def test_gqa_pcp_builder_rebinds_group_and_clears_batch_references():
+    group = object()
+    ns = {"Base": object, "get_pcp_group": lambda: group}
+    load_nodes("attention/context_parallel/attention_cp.py", ["AscendAttentionDCPMetadataBuilder"], ns, {HOOK})
+    builder = ns["AscendAttentionDCPMetadataBuilder"]()
+    builder.pcp_group = builder._pcp_context = builder._pcp_cache_group_idx = object()
+    for _ in range(2):
+        getattr(builder, HOOK)()
+        assert builder.pcp_group is group
+        assert builder._pcp_context is None and builder._pcp_cache_group_idx is None
+
+
+@pytest.mark.parametrize("optional_buffers", [False, True])
+def test_v41_builder_refills_metadata_and_rebinds_source_rope(optional_buffers):
+    rope = (torch.ones(2), torch.zeros(2))
+    ns = {"Base": object, "get_full_cos_and_sin_dsa_for_layer": lambda name: rope}
+    load_nodes("attention/dsa_v41.py", ["AscendDSAV41MetadataBuilder"], ns, {HOOK, "prepare_source_rope"})
+    builder = ns["AscendDSAV41MetadataBuilder"]()
+    neg_names = ("_slot_mapping", "_slot_mapping_2d", "_flat_slot_mapping")
+    zero_names = (
+        "_seq_lens",
+        "_cache_seq_lens",
+        "_cmp_residual",
+        "_smla_metadata",
+        "_qli_metadata",
+        "_c2_ring_metadata",
+        "_c2_complete_mask",
+        "_c2_source_positions",
+        "_c2_source_sin",
+    )
+    optional_neg = ("_dspark_swa_indices", "_a5_causal_swa_indices")
+    optional_zero = ("_dspark_swa_lengths", "_a5_causal_swa_lengths", "_a5_smla_metadata", "_a5_smla_length_rows")
+    for name in (*neg_names, *zero_names, "_c2_source_cos"):
+        setattr(builder, name, torch.full((4,), 42))
+    for name in (*optional_neg, *optional_zero):
+        setattr(builder, name, torch.full((4,), 42) if optional_buffers else None)
+    builder._device_metadata_tasks = (object(),)
+    builder._device_metadata_enabled = True
+    builder._build_compressor_metadata = True
+    builder._cache_kind = "compressor_state"
+    builder._c2_rope_layer_names = ["layer0"]
+    builder._c2_full_source_rope = object()
+    for _ in range(2):
+        getattr(builder, HOOK)()
+        for name in (*neg_names, *optional_neg):
+            value = getattr(builder, name)
+            assert value is None or torch.all(value == -1)
+        for name in (*zero_names, *optional_zero):
+            value = getattr(builder, name)
+            assert value is None or torch.all(value == 0)
+        assert torch.all(builder._c2_source_cos == 1)
+        assert builder._device_metadata_tasks == () and builder._device_metadata_enabled
+        assert builder._c2_full_source_rope is rope
+
+
+def test_v41_pcp_rebuilds_rope_aliases_before_first_metadata_build():
+    ns = {"Base": type("Base", (), {HOOK: lambda self: self.prepare_source_rope()})}
+    load_nodes("attention/context_parallel/dsa_v41_cp.py", ["AscendDSAV41PCPMetadataBuilder"], ns, {HOOK})
+    builder = ns["AscendDSAV41PCPMetadataBuilder"]()
+    builder._hidden_restore_idx_buffer = torch.ones(2, dtype=torch.int64)
+    builder._pcp_rope_buffers = {"old": object()}
+
+    def prepare():
+        assert not builder._pcp_rope_buffers
+        assert torch.all(builder._hidden_restore_idx_buffer == 0)
+        builder._pcp_rope_buffers["fresh"] = object()
+
+    builder.prepare_source_rope = Mock(side_effect=prepare)
+    for _ in range(2):
+        getattr(builder, HOOK)()
+        assert set(builder._pcp_rope_buffers) == {"fresh"}
+
+
+def test_kpool_discards_metadata_and_query_caches():
+    ns = {"Base": object}
+    load_nodes("attention/indexer_kpool.py", ["AscendIndexerKPoolMetadataBuilder"], ns, {HOOK})
+    builder = ns["AscendIndexerKPoolMetadataBuilder"]()
+    builder._metadata_buffers = {1: object()}
+    builder._dsa_cp_query_buffers = {2: torch.ones(2)}
+    for _ in range(2):
+        getattr(builder, HOOK)()
+        assert not builder._metadata_buffers and not builder._dsa_cp_query_buffers
+
+
+def test_multimodal_sentinel_cache_is_invalidated_without_changing_parameters():
+    ns = {"Base": object}
+    load_nodes("models/deepseek_v4/vl_model.py", ["AscendDeepseekV4ForConditionalGeneration"], ns, {HOOK})
+    model = ns["AscendDeepseekV4ForConditionalGeneration"]()
+    model._sentinel_table = torch.zeros(4, 2)
+    parameter = model.image_start = torch.ones(2)
+    for _ in range(2):
+        getattr(model, HOOK)()
+        assert model._sentinel_table is None
+        assert model.image_start is parameter and torch.all(parameter == 1)
 
 
 @pytest.mark.parametrize("enabled,initialized", [(False, False), (True, False), (True, True)])

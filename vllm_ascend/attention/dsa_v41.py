@@ -880,6 +880,18 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         """Clear request metadata while preserving feature configuration."""
         self._slot_mapping.fill_(-1)
         self._slot_mapping_2d.fill_(-1)
+        self._flat_slot_mapping.fill_(-1)
+        for tensor in (self._dspark_swa_indices, self._a5_causal_swa_indices):
+            if tensor is not None:
+                tensor.fill_(-1)
+        for tensor in (
+            self._dspark_swa_lengths,
+            self._a5_causal_swa_lengths,
+            self._a5_smla_metadata,
+            self._a5_smla_length_rows,
+        ):
+            if tensor is not None:
+                tensor.zero_()
         for tensor in (
             self._seq_lens,
             self._cache_seq_lens,
@@ -894,6 +906,8 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
             tensor.zero_()
         self._c2_source_cos.fill_(1)
         self._device_metadata_tasks = ()
+        # Global RoPE tables are rebuilt before metadata builders are reset.
+        self.prepare_source_rope()
 
     def _publish_task(
         self,

@@ -1047,6 +1047,8 @@ class AscendSFAImpl(MLAAttentionImpl):
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         if self.topk_indices_buffer is not None:
             self.topk_indices_buffer.fill_(-1)
+        if self.turboquant is not None:
+            self.turboquant.reset_runtime_state_after_snapshot_restore()
         if self.preprocess_type is PreprocessType.PROLOG_V3 and self.enable_sparse_sfa_c8:
             self.sfa_qsfa_k_nope_clip_alpha = torch.ones(
                 1,

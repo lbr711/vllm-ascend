@@ -288,6 +288,13 @@ class AscendDSAV41PCPMetadataBuilder(_ReplicatedCacheMetadataBuilder):
 
         self._pcp_rope_buffers: dict[str, tuple[torch.Tensor, ...]] = {}
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        # Drop aliases to the old full RoPE tables before the base hook calls
+        # prepare_source_rope; scratch views are rebuilt before graph capture.
+        self._pcp_rope_buffers.clear()
+        self._hidden_restore_idx_buffer.zero_()
+        super().reset_runtime_state_after_snapshot_restore()
+
     @staticmethod
     def _resize_request_buffers(builder, capacity: int) -> None:
         # Resize before graph capture.

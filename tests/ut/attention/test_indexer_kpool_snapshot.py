@@ -8,9 +8,11 @@ from vllm_ascend.attention.indexer_kpool import AscendIndexerKPoolMetadataBuilde
 def test_kpool_builder_discards_per_step_metadata_before_recapture():
     builder = AscendIndexerKPoolMetadataBuilder.__new__(AscendIndexerKPoolMetadataBuilder)
     builder._metadata_buffers = {123: (torch.ones(4),)}
+    builder._dsa_cp_query_buffers = {123: torch.ones(4)}
     builder.reset_runtime_state_after_snapshot_restore()
     builder.reset_runtime_state_after_snapshot_restore()
     assert builder._metadata_buffers == {}
+    assert builder._dsa_cp_query_buffers == {}
 
 
 def test_kpool_indexer_rebuilds_derived_weights_after_restore():

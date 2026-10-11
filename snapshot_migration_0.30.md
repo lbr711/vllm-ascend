@@ -143,3 +143,57 @@ IP selection. These tests do not validate NPU graph/HCCL execution or shared
 filesystem behavior on the deployment. Hardware acceptance still requires
 GLM5.2 PP=2 cold-start versus restore checks (short/long prompts and MTP), plus
 concurrent snapshot creation by multiple instances using the actual shared path.
+
+# Incremental migration to `snapshot_0.30.0_c6a42a86`
+
+## Pairing and history
+
+- Source: `snapshot_0.30.0_eee24e2e` at `7313261e6`; kept unchanged.
+- Ascend baseline: `c6a42a8649cc0179037b063177ab51cb814b7e28`.
+- Target: `snapshot_0.30.0_c6a42a86`. The 11 snapshot commits above
+  `eee24e2e` were replayed, without merging remote debug/log commits.
+- vLLM pairing remains `snapshot_0.30.0` at `8dd67ddead`; this migration
+  does not modify that repository or change the resume RPC.
+- Build a new snapshot with this pairing. Do not restore an old process image
+  using the new Python implementation or reuse weight shards across differing
+  models, quantization layouts or layer partitions.
+
+## Consumer-path adaptations
+
+| Owner and first consumer | Restore action / audit result |
+| --- | --- |
+| SFA indexer Hadamard matrices, consumed by C8 **and new C4** quantization | Rebuild for `enable_sparse_li_quant`, not C8 alone. These are non-persistent buffers, so state_dict is insufficient. |
+| TurboQuant `rotation`, `centroids`, `norm_lut`, new shared `inverse_rotation`; consumed by target/draft forward, compression and inverse | Recompute with the original `legacy_hadamard` seed sequence; bypass the cached initializer and refill all tensors in place. Existing aliases and the shared-cache entries remain valid, including layers initialized later. |
+| SFA implementation's new ordinary `turboquant` helper | Invoke its restore hook through the implementation's existing lifecycle entry point; DSA already delegates to its helper. |
+| PP transport top-k payload, aliased to the model's top-k index buffer | Fill with the invalid index sentinel `-1`, rather than overwriting the module reset with zero. Other intermediate payloads retain zero initialization. No receive/cold-start protocol changes. |
+| GQA PCP metadata builder's retained process group and batch context | Rebind the group after communication rebuild and clear per-batch references before capture. DCP implementation group refresh remains inherited from its mixin. |
+| V4.1 flat slots, optional DSpark/A5 metadata buffers and compressor source RoPE | Restore invalid-index/zero sentinels; rebind source tables after global RoPE restoration. Retain feature configuration. |
+| V4.1 PCP cached RoPE tuples | Clear old full-table aliases and regenerate scratch views before capture; reset hidden restore indices. Both local and nested global builders run their existing hooks. |
+| KPool metadata/query caches keyed by slot-mapping addresses | Clear both dictionaries before capture. Tail slot buffers need no extra reset: build copies every valid slot and fills the complete padding slice with `-1` before consumption. |
+| DSV4 multimodal sentinel table | Invalidate the ordinary cached stack; its source Parameters are checkpoint-restored and the table is recomputed on first use. This isolated repair does not certify the full multimodal pipeline. |
+| V1 C8 MXFP scale-page views | Existing module restore refills the scale cache from restored Parameters in place; new runner tuples retain valid aliases. Upstream per-page reassignment logic is preserved. |
+| MoE group registry and V2 PP helper rename | Iterate all config-keyed communication objects as before. No snapshot import references the removed `pp_utils` module. Preserve the new upstream `pp_transport` implementation. |
+| Worker and KV lifecycle | Retain group destruction, KV transport destruction, group rebuild, model restore, graph recapture, then endpoint rebuild. Worker initialization invokes the updated upstream group initializer rather than copying its old body. Pool/MultiConnector lifecycle remains unchanged. |
+
+The additional production edits are confined to restore hooks/helpers. They do
+not select V2, alter cold-start quantization, recreate runtime-owned streams or
+events, or silently switch a failing configuration to another implementation.
+
+## Validation and limits
+
+- 80 CPU contract tests passed in `tests/ut/snapshot/test_baseline_restore.py`,
+  including the retained PP, shared-writer, connector and teardown-order tests.
+  New cases cover C4/C8 gating, legacy/non-legacy TurboQuant, shared aliases,
+  inverse matrices, PP top-k sentinels, PCP/group/RoPE refresh and cache invalidation.
+- Ruff checks and formatting passed for the changed Python files; `git diff
+  --check` passed. These AST-extracted CPU tests execute production methods but
+  do not establish NPU import/ABI, graph capture, HCCL or end-to-end accuracy.
+- This is migration of the existing snapshot scope, not certification of all
+  newly introduced upstream features. Dynamic EPLB/HIXL weight transfer,
+  Engram, sparse KV offload, DSpark PD auxiliary-KV/prefix-pool transport,
+  V4.1 A5 graph-side metadata execution and full multimodal execution still
+  require dedicated lifecycle/hardware validation before snapshot deployment.
+- Hardware regression remains required for the deployed model: V1/V2 as used,
+  graph recapture, PP=1 and MooncakeV1 PP>1, short/long prompts, MTP, and pooled
+  KV transfer where enabled. No claim that all stale state has been eliminated
+  is made from CPU tests alone.
