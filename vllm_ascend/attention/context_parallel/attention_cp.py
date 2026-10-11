@@ -137,6 +137,11 @@ class AscendAttentionDCPMetadataBuilder(
         self._pcp_context: AscendPCPAttentionContext | None = None
         self._pcp_cache_group_idx: int | None = None
 
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        self.pcp_group = get_pcp_group()
+        self._pcp_context = None
+        self._pcp_cache_group_idx = None
+
     def build(
         self,
         common_prefix_len: int,

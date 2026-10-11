@@ -67,6 +67,11 @@ def test_v41_metadata_builder_reset_clears_requests_and_preserves_configuration(
     builder = AscendDSAV41MetadataBuilder.__new__(AscendDSAV41MetadataBuilder)
     builder._slot_mapping = torch.ones(4, dtype=torch.int64)
     builder._slot_mapping_2d = torch.ones((4, 2), dtype=torch.int32)
+    builder._flat_slot_mapping = torch.ones(4, dtype=torch.int64)
+    builder._dspark_swa_indices = builder._a5_causal_swa_indices = None
+    builder._dspark_swa_lengths = builder._a5_causal_swa_lengths = None
+    builder._a5_smla_metadata = builder._a5_smla_length_rows = None
+    builder._build_compressor_metadata = False
     zeroed_names = (
         "_seq_lens",
         "_cache_seq_lens",

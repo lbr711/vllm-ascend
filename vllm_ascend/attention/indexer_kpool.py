@@ -160,6 +160,7 @@ class AscendIndexerKPoolMetadataBuilder(AttentionMetadataBuilder):
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         # Recapture rebuilds per-draft-step buffers using the restored slot mappings.
         self._metadata_buffers.clear()
+        self._dsa_cp_query_buffers.clear()
 
     def _get_metadata_buffers(
         self, common_attn_metadata: CommonAttentionMetadata
