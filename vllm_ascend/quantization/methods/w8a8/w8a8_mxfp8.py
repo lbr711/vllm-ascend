@@ -32,6 +32,7 @@ from vllm_ascend.ops.fused_moe.dataclass.moe_mlp import MoEMlpComputeInput
 from vllm_ascend.ops.fused_moe.moe_utils import cumsum_group_list, maybe_normalize_mxfp_scale_layout
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts  # noqa: F401
 from vllm_ascend.quantization.utils import get_dynamic_mx_quant_scale_alg
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import persist_tensor_lists
 from vllm_ascend.utils import FP8_METHOD, dispose_tensor, maybe_trans_nz, maybe_trans_nz_with_scale
 
 from ..base import (
@@ -435,6 +436,16 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod(AscendMoEScheme):
                 w2_weight_scale.clone().view(torch.float8_e8m0fnu)
                 for w2_weight_scale in layer.w2_weight_scale.data.unbind(dim=0)
             ]
+            if getattr(get_current_vllm_config(), "snapshot_config", None) is not None:
+                persist_tensor_lists(
+                    layer,
+                    (
+                        "cann_mega_moe_w13_weight_list",
+                        "cann_mega_moe_w2_weight_list",
+                        "cann_mega_moe_w13_weight_scale_list",
+                        "cann_mega_moe_w2_weight_scale_list",
+                    ),
+                )
 
             tensor_names = (
                 "w13_weight",

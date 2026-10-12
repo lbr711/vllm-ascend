@@ -207,6 +207,7 @@ class TestAscendW4A8MXFP4MoEMethod(TestBase):
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.use_cann_megamoe", return_value=True)
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.torch_npu")
     def test_megamoe_scales_preserve_e8m0_bytes(self, mock_npu, mock_use_cann_megamoe, mock_vllm):
+        mock_vllm.return_value.snapshot_config = object()
         mock_npu.npu_format_cast.side_effect = lambda x, *a, **kw: x
         layer = self._make_moe_layer()
         original_scales = {}
@@ -226,6 +227,14 @@ class TestAscendW4A8MXFP4MoEMethod(TestBase):
                     self.assertEqual(scale.dtype, torch.float8_e8m0fnu)
                     self.assertEqual(scale.shape, (original.shape[1], original.shape[2] // 2, 2))
                     torch.testing.assert_close(scale.view(torch.uint8).flatten(), original[expert].flatten())
+        for name in (
+            "cann_mega_moe_w13_weight_list",
+            "cann_mega_moe_w2_weight_list",
+            "cann_mega_moe_w13_weight_scale_list",
+            "cann_mega_moe_w2_weight_scale_list",
+        ):
+            for index, tensor in enumerate(getattr(layer, name)):
+                self.assertIs(layer.get_buffer(f"_snapshot_{name}_{index}"), tensor)
 
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.use_cann_megamoe", return_value=False)
