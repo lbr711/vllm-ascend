@@ -274,6 +274,7 @@ class TestAscendW8A8MXFP8MoEMethod(TestBase):
     @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.use_cann_megamoe", return_value=True)
     def test_megamoe_preserves_per_expert_payload_after_disposing_source(self, _mock_use_megamoe, mock_vllm):
         mock_vllm.return_value = create_mock_vllm_config()
+        mock_vllm.return_value.snapshot_config = object()
         layer = create_mxfp_moe_layer(
             num_experts=self.num_experts,
             hidden_size=self.hidden_size,
@@ -300,6 +301,14 @@ class TestAscendW8A8MXFP8MoEMethod(TestBase):
                         torch.testing.assert_close(expert.view(torch.uint8), expected.view(torch.uint8), rtol=0, atol=0)
                     else:
                         torch.testing.assert_close(expert.float(), expected.float(), rtol=0, atol=0)
+        for name in (
+            "cann_mega_moe_w13_weight_list",
+            "cann_mega_moe_w2_weight_list",
+            "cann_mega_moe_w13_weight_scale_list",
+            "cann_mega_moe_w2_weight_scale_list",
+        ):
+            for index, tensor in enumerate(getattr(layer, name)):
+                self.assertIs(layer.get_buffer(f"_snapshot_{name}_{index}"), tensor)
         self.scheme.process_weights_after_loading(layer)
         self.assertIs(layer.cann_mega_moe_w13_weight_list, weights.w1)
 

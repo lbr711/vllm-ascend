@@ -197,3 +197,31 @@ events, or silently switch a failing configuration to another implementation.
   graph recapture, PP=1 and MooncakeV1 PP>1, short/long prompts, MTP, and pooled
   KV transfer where enabled. No claim that all stale state has been eliminated
   is made from CPU tests alone.
+
+# Incremental migration to `snapshot_0.30.0_56debc19`
+
+## Pairing and history
+
+- Source: `snapshot_0.30.0_c6a42a86` at `f0f7f77bc`; kept unchanged.
+- Ascend baseline: `56debc194a42d473f8c456d4850369442d694c8f`.
+- Target: `snapshot_0.30.0_56debc19`. The 13 snapshot commits above
+  `c6a42a86` were replayed in order; the target baseline remains the first
+  parent of the migrated snapshot series.
+- vLLM pairing remains `snapshot_0.30.0`; no resume RPC or checkpoint filename
+  change is introduced by this migration.
+
+## Consumer-path audit and adaptation
+
+| New baseline area | Restore result |
+| --- | --- |
+| PCP graph RoPE staging and hidden-restore buffers | Each consumed slice is copied or zeroed before graph execution. Existing graph recapture replaces captured registrations; no checkpoint entry is required. |
+| PCP SFA O-projection collective buffers | Input slices are copied and collective output slices are overwritten before use. The retained process-group wrapper is rebuilt by the existing SFA restore hook. |
+| Sparse MLA valid-mask and plan buffers | The valid mask is copied for every prepared batch; lengths and the plan are regenerated from current selected indices. Existing reset still clears block tables, lengths, metadata and sinks. |
+| V1 static KV graph buffers | The new baseline zeroes static KV buffers after `capture_model`; snapshot restore invokes that same recapture path. |
+| Shared-expert overlap prepared inputs/events | They are request-scoped and created by the current forward. No long-lived request object is restored. |
+| A5 MegaMoE MXFP4/MXFP8 expert lists | The operator consumes cloned per-expert weight/scale tensors after the source Parameters are disposed. With snapshot enabled, W4A4, W4A8 and W8A8 now register those lists as persistent buffer aliases so checkpoint restore refills the exact tensors consumed by MegaMoE. Snapshot-disabled initialization is unchanged. |
+| Mooncake layerwise listener gate | Preserve normal blocking receive when snapshot is disabled and bounded polling when enabled. Rebuild tolerates test/minimal configs without a declared snapshot field; production `VllmConfig` behavior is unchanged. |
+
+No fallback or feature-disable path is added. Hardware validation is still
+required for NPU graph recapture, collectives, MooncakeV1 PP and every deployed
+quantization path; CPU tests cannot prove numerical equivalence.
