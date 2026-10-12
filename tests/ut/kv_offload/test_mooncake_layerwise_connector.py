@@ -593,6 +593,42 @@ class TestKVCacheRecvingLayerThread(unittest.TestCase):
         )
         self.ready_event = threading.Event()
 
+    def test_snapshot_gate_preserves_blocking_receive_when_disabled(self):
+        module = sys.modules[KVCacheRecvingLayerThread.__module__]
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                thread = KVCacheRecvingLayerThread(
+                    tp_rank=0,
+                    side_channel_port=5555,
+                    tp_size=2,
+                    pd_head_ratio=1,
+                    local_engine_id="engineA",
+                    metadata=self.meta,
+                    ready_event=threading.Event(),
+                    snapshot_enabled=enabled,
+                )
+                socket = MagicMock()
+                socket.recv_multipart.side_effect = SystemExit
+                context = MagicMock()
+                context.__enter__.return_value = socket
+                with (
+                    patch.object(module, "zmq_ctx", return_value=context),
+                    patch.object(module.zmq, "Poller") as poller_cls,
+                ):
+                    if enabled:
+                        poller_cls.return_value.poll.return_value = {socket: zmq.POLLIN}
+                    with self.assertRaises(SystemExit):
+                        thread.run()
+                self.assertEqual(poller_cls.call_count, int(enabled))
+                socket.recv_multipart.assert_called_once_with()
+
+                if enabled:
+                    thread.stop()
+                    self.assertTrue(thread._stop_event.is_set())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "only available when snapshot is enabled"):
+                        thread.stop()
+
     def test_get_and_clear_done_requests(self):
         th = KVCacheRecvingLayerThread(
             tp_rank=0,
@@ -799,6 +835,7 @@ class TestKVCacheRecvingLayerThread(unittest.TestCase):
 
 class MockVllmConfig:
     def __init__(self):
+        self.snapshot_config = None
         self.model_config = MagicMock()
         self.parallel_config = MagicMock()
         self.cache_config = MagicMock()

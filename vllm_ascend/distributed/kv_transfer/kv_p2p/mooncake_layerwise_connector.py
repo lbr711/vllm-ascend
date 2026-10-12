@@ -587,6 +587,7 @@ class KVCacheRecvingLayerThread(threading.Thread):
         local_engine_id: str,
         metadata: MooncakeAgentMetadata,
         ready_event: threading.Event,
+        snapshot_enabled: bool = False,
     ):
         super().__init__(daemon=True, name="KVCacheRecvingLayerThread")
         self.tp_rank = tp_rank
@@ -601,12 +602,16 @@ class KVCacheRecvingLayerThread(threading.Thread):
         self.task_tracker = dict[str, int]()
         self.ready_event = ready_event
         self.metadata = metadata
-        self._stop_event = threading.Event()
+        # Keep the baseline blocking receive loop unless snapshot lifecycle
+        # support needs to stop and rebind this listener after restore.
+        self._stop_event = threading.Event() if snapshot_enabled else None
 
     def stop(self) -> None:
         """[snapshot] Signal the recv loop to exit so the ROUTER socket can be
         unbound (used when restarting the thread on a new pod IP after a
         container snapshot restore)."""
+        if self._stop_event is None:
+            raise RuntimeError("KV receiver shutdown is only available when snapshot is enabled")
         self._stop_event.set()
 
     def get_and_clear_done_requests(self) -> set[str]:
@@ -667,13 +672,15 @@ class KVCacheRecvingLayerThread(threading.Thread):
         with zmq_ctx(zmq.ROUTER, path) as sock:  # type: ignore
             self.ready_event.set()
             decoder = msgspec.msgpack.Decoder(type=tuple)
-            poller = zmq.Poller()  # type: ignore
-            poller.register(sock, zmq.POLLIN)  # type: ignore
-            while not self._stop_event.is_set():
+            poller = None
+            if self._stop_event is not None:
+                poller = zmq.Poller()  # type: ignore
+                poller.register(sock, zmq.POLLIN)  # type: ignore
+            while self._stop_event is None or not self._stop_event.is_set():
                 try:
                     # Poll with a timeout so the loop can observe stop requests
                     # (needed to rebind the ROUTER on a new IP after snapshot).
-                    if not dict(poller.poll(timeout=1000)).get(sock):
+                    if poller is not None and not dict(poller.poll(timeout=1000)).get(sock):
                         continue
                     frames = sock.recv_multipart()
                     if len(frames) < 2:
@@ -1482,6 +1489,7 @@ class MooncakeLayerwiseConnectorWorker:
             self.engine_id,
             metadata,
             ready_event,
+            snapshot_enabled=self.vllm_config.snapshot_config is not None,
         )
         new_recv.side_channel_host = local_ip
         new_recv.start()
@@ -1706,6 +1714,7 @@ class MooncakeLayerwiseConnectorWorker:
                 self.engine_id,
                 metadata,
                 ready_event,
+                snapshot_enabled=self.vllm_config.snapshot_config is not None,
             )
             self.kv_recv_layer_thread.start()
             ready_event.wait()
