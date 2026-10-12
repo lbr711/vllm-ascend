@@ -138,7 +138,7 @@ class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
                 else:
                     layer.w13_weight_list = [weight.clone() for weight in layer.w13_weight.data.unbind(dim=0)]
                     layer.w2_weight_list = [weight.clone() for weight in layer.w2_weight.data.unbind(dim=0)]
-                    if get_current_vllm_config().snapshot_config is not None:
+                    if getattr(get_current_vllm_config(), "snapshot_config", None) is not None:
                         persist_tensor_lists(layer, ("w13_weight_list", "w2_weight_list"))
                     del layer.w13_weight
                     del layer.w2_weight

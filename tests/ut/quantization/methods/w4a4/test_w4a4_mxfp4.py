@@ -175,6 +175,7 @@ class TestAscendW4A4MXFP4MoEMethod(TestBase):
     )
     def test_megamoe_uses_semantic_e8m0_scale_dtype(self, _mock_cast, _mock_use_megamoe, mock_vllm):
         mock_vllm.return_value = create_mock_vllm_config()
+        mock_vllm.return_value.snapshot_config = object()
         layer = nn.Module()
         layer.w13_weight = nn.Parameter(
             torch.randint(
@@ -210,6 +211,14 @@ class TestAscendW4A4MXFP4MoEMethod(TestBase):
                 expected = expected.reshape(expected.shape[0], -1, 2)
                 self.assertEqual(expert_scale.dtype, torch.float8_e8m0fnu)
                 torch.testing.assert_close(expert_scale.view(torch.uint8), expected, rtol=0, atol=0)
+        for name in (
+            "cann_mega_moe_w13_weight_list",
+            "cann_mega_moe_w2_weight_list",
+            "cann_mega_moe_w13_weight_scale_list",
+            "cann_mega_moe_w2_weight_scale_list",
+        ):
+            for index, tensor in enumerate(getattr(layer, name)):
+                self.assertIs(layer.get_buffer(f"_snapshot_{name}_{index}"), tensor)
 
     @patch("vllm_ascend.quantization.methods.w4a4.w4a4_mxfp4.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w4a4.w4a4_mxfp4.use_cann_megamoe", return_value=False)
