@@ -316,7 +316,9 @@ class KVCacheSendingThread(threading.Thread):
         self.port_send_num: dict[str, int] = {}
 
         self.task_tracker = KVCacheTaskTracker()
-        self._stop_event = threading.Event()
+        # Keep the baseline blocking receive loop unless snapshot lifecycle
+        # support needs to stop and rebind this listener after restore.
+        self._stop_event = threading.Event() if vllm_config.snapshot_config is not None else None
 
     def get_and_clear_finished_requests(self) -> set[str]:
         """
@@ -369,11 +371,13 @@ class KVCacheSendingThread(threading.Thread):
         logger.debug("Size of encoded MooncakeAgentMetadata: %s bytes", str(size_in_bytes))
 
         decoder = msgspec.msgpack.Decoder(type=tuple)
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
-        while not self._stop_event.is_set():
+        poller = None
+        if self._stop_event is not None:
+            poller = zmq.Poller()
+            poller.register(sock, zmq.POLLIN)
+        while self._stop_event is None or not self._stop_event.is_set():
             try:
-                if sock not in dict(poller.poll(1000)):
+                if poller is not None and sock not in dict(poller.poll(1000)):
                     continue
                 frames = sock.recv_multipart()
                 if len(frames) < 2:
@@ -454,6 +458,8 @@ class KVCacheSendingThread(threading.Thread):
     def stop(self) -> None:
         """[snapshot] Signal the send loop to exit so the ROUTER socket can be
         unbound and rebound on a new pod IP after a container snapshot restore."""
+        if self._stop_event is None:
+            raise RuntimeError("KV sender shutdown is only available when snapshot is enabled")
         self._stop_event.set()
 
 
