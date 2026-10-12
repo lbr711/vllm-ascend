@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import torch
+import zmq
 
 fake_engine = types.ModuleType("mooncake.engine")
 fake_engine.TransferEngine = MagicMock()  # type: ignore[attr-defined]
@@ -362,6 +363,7 @@ class TestMooncakeHybridConnectorWorkerSnapshotRestore(unittest.TestCase):
             "decode": {"tp_size": decode_tp_size, "dp_size": 1},
         }
         config = types.SimpleNamespace(
+            snapshot_config=None,
             parallel_config=types.SimpleNamespace(
                 tensor_parallel_size=tp_size,
                 prefill_context_parallel_size=pcp_size,
@@ -424,6 +426,49 @@ class TestMooncakeHybridConnectorWorkerSnapshotRestore(unittest.TestCase):
             else:
                 worker.kv_recv_thread = MagicMock()
         return worker
+
+    def test_snapshot_gate_preserves_blocking_receive_when_disabled(self):
+        module = sys.modules[KVCacheSendingThread.__module__]
+        metadata = MooncakeAgentMetadata("engine", 7777, 128, [], 0, [], (0, 0), local_ip="127.0.0.1")
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                config = types.SimpleNamespace(
+                    snapshot_config=object() if enabled else None,
+                    parallel_config=types.SimpleNamespace(pipeline_parallel_size=1),
+                )
+                with patch.multiple(
+                    module,
+                    get_pcp_group=MagicMock(return_value=types.SimpleNamespace(rank_in_group=0, world_size=1)),
+                    get_tensor_model_parallel_world_size=MagicMock(return_value=1),
+                ):
+                    sender = KVCacheSendingThread(
+                        config,
+                        0,
+                        1,
+                        "engine",
+                        "127.0.0.1",
+                        5555,
+                        metadata,
+                        threading.Event(),
+                        {},
+                        0,
+                    )
+                socket = MagicMock()
+                socket.recv_multipart.side_effect = SystemExit
+                with patch.object(module.zmq, "Poller") as poller_cls:
+                    if enabled:
+                        poller_cls.return_value.poll.return_value = {socket: zmq.POLLIN}
+                    with self.assertRaises(SystemExit):
+                        sender.run_busy_loop(socket)
+                self.assertEqual(poller_cls.call_count, int(enabled))
+                socket.recv_multipart.assert_called_once_with()
+
+                if enabled:
+                    sender.stop()
+                    self.assertTrue(sender._stop_event.is_set())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "only available when snapshot is enabled"):
+                        sender.stop()
 
     def test_start_load_kv_replica_routing_and_completion(self):
         cases = [
