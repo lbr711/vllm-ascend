@@ -212,6 +212,41 @@ def test_sender_endpoint_includes_pipeline_and_prefill_context_ranks(pp_rank, pc
 
 
 class TestKVCacheSendingThread(unittest.TestCase):
+    def test_snapshot_gate_preserves_blocking_receive_when_disabled(self):
+        module = sys.modules[KVCacheSendingThread.__module__]
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                config = MockVllmConfig()
+                config.snapshot_config = object() if enabled else None
+                sender = KVCacheSendingThread(
+                    vllm_config=config,
+                    tp_rank=0,
+                    prefill_tp_size=1,
+                    local_engine_id="prefill-engine",
+                    side_channel_host="127.0.0.1",
+                    side_channel_port=5555,
+                    metadata=make_agent_metadata(engine_id="prefill-engine"),
+                    ready_event=threading.Event(),
+                    kv_caches={},
+                    pcp_rank=0,
+                )
+                socket = MagicMock(spec=Socket)
+                socket.recv_multipart.side_effect = SystemExit
+                with patch.object(module.zmq, "Poller") as poller_cls:
+                    if enabled:
+                        poller_cls.return_value.poll.return_value = {socket: zmq.POLLIN}
+                    with self.assertRaises(SystemExit):
+                        sender.run_busy_loop(socket)
+                self.assertEqual(poller_cls.call_count, int(enabled))
+                socket.recv_multipart.assert_called_once_with()
+
+                if enabled:
+                    sender.stop()
+                    self.assertTrue(sender._stop_event.is_set())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "only available when snapshot is enabled"):
+                        sender.stop()
+
     def test_multiple_done_messages_complete_only_after_all_pulls(self):
         """UT-IT: real sender counter gates completion; peers may finish in either order.
 
@@ -1772,6 +1807,7 @@ class MockVllmConfig:
         self.kv_transfer_config = MagicMock()
         self.scheduler_config = MagicMock(disable_hybrid_kv_cache_manager=True)
         self.speculative_config = None
+        self.snapshot_config = None
         self.model_config.use_mla = False
         self.model_config.is_deepseek_mla = False
         self.model_config.hf_text_config = types.SimpleNamespace(
