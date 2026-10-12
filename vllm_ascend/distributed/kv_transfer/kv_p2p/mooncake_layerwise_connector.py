@@ -1480,7 +1480,7 @@ class MooncakeLayerwiseConnectorWorker:
             self.engine_id,
             metadata,
             ready_event,
-            snapshot_enabled=self.vllm_config.snapshot_config is not None,
+            snapshot_enabled=getattr(self.vllm_config, "snapshot_config", None) is not None,
         )
         new_recv.side_channel_host = local_ip
         new_recv.start()
@@ -1687,7 +1687,7 @@ class MooncakeLayerwiseConnectorWorker:
                 self.engine_id,
                 metadata,
                 ready_event,
-                snapshot_enabled=self.vllm_config.snapshot_config is not None,
+                snapshot_enabled=getattr(self.vllm_config, "snapshot_config", None) is not None,
             )
             self.kv_recv_layer_thread.start()
             ready_event.wait()
