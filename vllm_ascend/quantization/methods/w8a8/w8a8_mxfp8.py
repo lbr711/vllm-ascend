@@ -32,6 +32,7 @@ from vllm_ascend.ops.fused_moe.dataclass.moe_mlp import MoEMlpComputeInput
 from vllm_ascend.ops.fused_moe.moe_utils import cumsum_group_list, maybe_normalize_mxfp_scale_layout
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts  # noqa: F401
 from vllm_ascend.quantization.utils import get_dynamic_mx_quant_scale_alg
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import persist_tensor_lists
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_NZ,
     FP8_METHOD,
@@ -580,6 +581,14 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod(AscendMoEScheme):
 
             self._update_expert_list(layer, f"{list_prefix}{weight_name}_list", weight_list)
             self._update_expert_list(layer, f"{list_prefix}{scale_name}_list", scale_list)
+
+        if getattr(get_current_vllm_config(), "snapshot_config", None) is not None:
+            persist_tensor_lists(
+                layer,
+                tuple(f"{list_prefix}{name}_list" for name in (
+                    "w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"
+                )),
+            )
 
         for tensor_name, parameter in layer._mxfp8_moe_parameters.items():
             dispose_tensor(parameter)

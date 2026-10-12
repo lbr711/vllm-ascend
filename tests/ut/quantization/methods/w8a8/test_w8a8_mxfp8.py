@@ -422,6 +422,7 @@ class TestAscendW8A8MXFP8MoEMethod(TestBase):
     @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.get_current_vllm_config")
     def test_mega_moe_uses_non_transposed_per_expert_payload(self, mock_vllm):
         mock_vllm.return_value = create_mock_vllm_config()
+        mock_vllm.return_value.snapshot_config = object()
         layer = create_mxfp_moe_layer(
             num_experts=self.num_experts,
             hidden_size=self.hidden_size,
@@ -456,6 +457,14 @@ class TestAscendW8A8MXFP8MoEMethod(TestBase):
                     actual = expert.view(torch.uint8) if name.endswith("scale") else expert.float()
                     expected = expected.view(torch.uint8) if name.endswith("scale") else expected.float()
                     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        for name in (
+            "cann_mega_moe_w13_weight_list",
+            "cann_mega_moe_w2_weight_list",
+            "cann_mega_moe_w13_weight_scale_list",
+            "cann_mega_moe_w2_weight_scale_list",
+        ):
+            for index, tensor in enumerate(getattr(layer, name)):
+                self.assertIs(layer.get_buffer(f"_snapshot_{name}_{index}"), tensor)
         self.scheme.process_weights_after_loading(layer)
         self.assertIs(layer.cann_mega_moe_w13_weight_list, weights.w1)
         self.assertIs(weight_views[0], weights.w1)
