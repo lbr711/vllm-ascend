@@ -135,7 +135,7 @@ def test_reset_triton_kernel_caches():
 
     class FakeJITFunction:
         def __init__(self):
-            self.cache = MagicMock()
+            self.device_caches = MagicMock()
 
     class FakeAutotuner:
         def __init__(self):
@@ -168,12 +168,12 @@ def test_reset_triton_kernel_caches():
     ):
         _reset_triton_kernel_caches()
 
-    kernel.cache.clear.assert_called_once_with()
+    kernel.device_caches.clear.assert_called_once_with()
     tuned_kernel.cache.clear.assert_called_once_with()
-    tuned_kernel.fn.cache.clear.assert_called_once_with()
-    heuristic_kernel.fn.cache.clear.assert_called_once_with()
+    tuned_kernel.fn.device_caches.clear.assert_called_once_with()
+    heuristic_kernel.fn.device_caches.clear.assert_called_once_with()
     nested_kernel.fn.cache.clear.assert_called_once_with()
-    nested_kernel.fn.fn.cache.clear.assert_called_once_with()
+    nested_kernel.fn.fn.device_caches.clear.assert_called_once_with()
 
 
 def test_call_aclrt_snapshot_api_invokes_aclrt_library(worker):
