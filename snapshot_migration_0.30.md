@@ -225,3 +225,55 @@ events, or silently switch a failing configuration to another implementation.
 No fallback or feature-disable path is added. Hardware validation is still
 required for NPU graph recapture, collectives, MooncakeV1 PP and every deployed
 quantization path; CPU tests cannot prove numerical equivalence.
+
+# Incremental migration to `snapshot_0.30.0_8233545b`
+
+## Pairing and history
+
+- Source: `snapshot_0.30.0_56debc19` at `800846a5160a77bed7450404d89df96965edf0d2`;
+  kept unchanged.
+- Ascend baseline: `8233545b5`. It is a descendant of
+  `56debc194a42d473f8c456d4850369442d694c8f`.
+- Target: `snapshot_0.30.0_8233545b`. The 14 snapshot commits above the old
+  baseline were replayed in order.
+- The only production conflict was Mooncake store initialization. The result
+  retains both the snapshot-owned current-hostname cache and the new baseline's
+  scheduler-only SSD setup gate; neither path falls back to the other's role.
+- vLLM remains on `snapshot_0.30.0`; this migration does not change its resume
+  RPC, checkpoint layout or port protocol.
+
+## Incremental consumer-path audit
+
+| New baseline area | Restore result |
+| --- | --- |
+| SFA cache grouping and Prolog V3 indexer compatibility | The change selects a preprocessing implementation and does not introduce persistent tensors, request state or native resources. Existing SFA and metadata-builder restore hooks remain the owners of runtime state. |
+| DSV4 fixed-K PCP speculative decoding | `_mtp_hidden_buffer` is now allocated before compilation so graph capture and PCP restoration share one stable address. Every target forward copies the complete subsequently consumed token slice before the draft reads it. PCP itself is reconstructed on restore and reconnects model/speculator consumers; no checkpoint entry or replacement allocation is required. |
+| PCP draft metadata and adaptive verification | Restore clears `execute_model_state`, request/block-table buffers and speculator state, then reconstructs the PCP manager. New batch replacements are request-local values produced after restore, not persistent state. |
+| KVPP speculative decoding | The baseline widens accepted configurations but adds no new long-lived object. Existing restore shuts down the old prefetch executor and recreates `KVPPRuntime` from current cache/configuration state for both V1 and V2. |
+| MiniMax M3 fused sparse preparation | Builder-owned context, cumulative-length and start-location buffers are ordinary device tensors, but every active slice is written by `build()` before the operator consumes it. Fused query/index outputs are allocated per invocation, while KV/index caches retain normal block-table ownership. No stale tail is consumed. |
+| New MiniMax Triton kernels | Their launcher/autotune caches are process-global native runtime state. The existing restore pass scans loaded vLLM/vLLM-Ascend modules and clears `JITFunction`, `Autotuner` and `Heuristics` caches before graph recapture, covering these kernels without model-specific duplication. |
+| Step-3.5/3.7 overlay backing and XLite layout detection | These changes derive cache layout or immutable model-format flags during initialization. Cache contents remain governed by fresh block tables; no new restorable tensor or handle is retained. |
+| Static V1 KV-buffer zeroing revert | The target baseline deliberately removes its cold-start post-capture zero pass and its tests. Migration preserves that baseline decision instead of silently changing cold startup. Snapshot restore still invalidates request/block-table state and follows the same graph-capture behavior as this baseline. GLM-5.3-Flash C8, which motivated the reverted upstream change, requires explicit hardware accuracy validation on this baseline. |
+
+No additional snapshot production hook was needed for this baseline delta.
+This conclusion is based on the first consumers and overwrite coverage above,
+not merely on whether newly added tensors appear in `state_dict`.
+
+## Validation and limits
+
+- Snapshot contract suite: 84 passed.
+- Individually isolated affected suites for SFA/CP, MiniMax M3 metadata and
+  fused preparation, PCP, fixed-K MTP, DSpark, adaptive verification, V2
+  speculator/model runner and Mooncake backend: 918 passed. The one MTP/PCP
+  port-allocation case was rerun outside the socket-restricted sandbox and
+  passed (75/75 for that file).
+- The migrated commit series matches the source series under `git range-diff`;
+  the only intentional difference is the Mooncake conflict resolution described
+  above.
+
+These are CPU/mock tests. They do not execute NPU kernels, HCCL teardown,
+container restore or ACL Graph recapture. Hardware acceptance remains required
+for the deployed model/configuration, especially PP/PCP, fixed-K speculation,
+KVPP, MiniMax fused kernels and GLM-5.3-Flash C8. A new container snapshot must
+be created from this exact pairing; restoring a process image created with the
+old baseline is unsupported.
