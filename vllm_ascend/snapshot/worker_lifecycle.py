@@ -130,7 +130,7 @@ def _reset_triton_kernel_caches() -> None:
             return
         seen.add(id(kernel))
         if isinstance(kernel, JITFunction):
-            kernel.cache.clear()
+            kernel.device_caches.clear()
         elif isinstance(kernel, Autotuner):
             kernel.cache.clear()
             reset_kernel(kernel.fn)
