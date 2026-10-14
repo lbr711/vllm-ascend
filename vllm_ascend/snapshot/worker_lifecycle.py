@@ -12,7 +12,7 @@ from vllm.config import set_current_vllm_config
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import logger
-from vllm.utils.network_utils import get_distributed_init_method
+from vllm.utils.network_utils import get_distributed_init_method, get_ip
 
 from vllm_ascend.distributed.parallel_state import destroy_ascend_model_parallel
 from vllm_ascend.snapshot.distributed import cleanup_dist_env_for_snapshot, snapshot_hccl_teardown
@@ -84,11 +84,14 @@ def unlock_worker(worker) -> None:
 
 def resume_worker(
     worker,
-    local_ip: str,
     data_parallel_master_ip: str,
     model_path: str | None = None,
     new_engine_id: str | None = None,
 ) -> None:
+    # Resolve on each worker's node, bypassing the checkpoint's VLLM_HOST_IP.
+    local_ip = get_ip(force=True)
+    if local_ip in ("", "0.0.0.0", "::"):
+        raise RuntimeError("Unable to resolve local worker IP for snapshot restore")
     steps = (
         ("restore_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessRestore")),
         ("unlock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessUnlock")),

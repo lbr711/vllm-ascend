@@ -71,11 +71,11 @@ def test_worker_snapshot_methods_delegate(worker):
         patch("vllm_ascend.worker.worker.unlock_worker") as unlock,
     ):
         worker.suspend("/tmp/model")
-        worker.resume("10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+        worker.resume("10.0.0.3", "/tmp/model", "engine-id")
         worker.device_unlock()
 
     suspend.assert_called_once_with(worker, "/tmp/model")
-    resume.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+    resume.assert_called_once_with(worker, "10.0.0.3", "/tmp/model", "engine-id")
     unlock.assert_called_once_with(worker)
 
 
@@ -106,21 +106,37 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
         patch("vllm_ascend.snapshot.worker_lifecycle.restore_model_runner") as restore_model,
         patch("vllm_ascend.snapshot.worker_lifecycle._recapture_graph") as recapture_graph,
         patch("vllm_ascend.snapshot.worker_lifecycle._rebuild_kv_transfer_engine") as rebuild_kv,
+        patch("vllm_ascend.snapshot.worker_lifecycle.get_ip", return_value="10.0.0.2") as get_ip,
     ):
         from vllm_ascend.snapshot.worker_lifecycle import resume_worker
 
-        resume_worker(worker, "10.0.0.2", "10.0.0.3", "/tmp/model", "engine-id")
+        resume_worker(worker, "10.0.0.3", "/tmp/model", "engine-id")
 
     assert [call.args[1] for call in call_aclrt.call_args_list] == [
         "aclrtSnapShotProcessRestore",
         "aclrtSnapShotProcessUnlock",
     ]
+    get_ip.assert_called_once_with(force=True)
     reset_kernel_caches.assert_called_once_with()
     update_worker.assert_called_once_with(worker, "10.0.0.2", "10.0.0.3")
     rebuild_parallel.assert_called_once_with(worker)
     restore_model.assert_called_once_with(worker.model_runner, "/tmp/model")
     recapture_graph.assert_called_once_with(worker)
     rebuild_kv.assert_called_once_with(worker, "10.0.0.2", "engine-id")
+
+
+@pytest.mark.parametrize("local_ip", ["", "0.0.0.0", "::"])
+def test_snapshot_resume_rejects_unresolved_local_ip(worker, local_ip):
+    from vllm_ascend.snapshot.worker_lifecycle import resume_worker
+
+    with (
+        patch("vllm_ascend.snapshot.worker_lifecycle.get_ip", return_value=local_ip),
+        patch("vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api") as call_aclrt,
+        pytest.raises(RuntimeError, match="Unable to resolve local worker IP"),
+    ):
+        resume_worker(worker, "10.0.0.3", "/tmp/model", "engine-id")
+
+    call_aclrt.assert_not_called()
 
 
 def test_reset_triton_kernel_caches():

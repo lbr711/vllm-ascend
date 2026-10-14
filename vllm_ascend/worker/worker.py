@@ -847,12 +847,11 @@ class NPUWorker(WorkerBase):
 
     def resume(
         self,
-        local_ip: str,
         data_parallel_master_ip: str,
         model_path: str | None = None,
         new_engine_id: str | None = None,
     ) -> None:
-        resume_worker(self, local_ip, data_parallel_master_ip, model_path, new_engine_id)
+        resume_worker(self, data_parallel_master_ip, model_path, new_engine_id)
 
     def load_model(self) -> None:
         if self.vllm_config.model_config.enable_sleep_mode:
