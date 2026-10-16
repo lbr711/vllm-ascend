@@ -7,6 +7,7 @@ This tests tensor contents/ownership and hook dispatch, not NPU execution.
 
 import ast
 import fcntl
+import io
 import math
 import multiprocessing
 import os
@@ -58,6 +59,104 @@ def checkpoint_namespace():
     return load_nodes(
         "snapshot/model_runner_lifecycle/module_lifecycle.py", ["dump_state_dict", "restore_state_dict"], ns
     )
+
+
+@pytest.mark.parametrize("snapshot_enabled", [False, True])
+@pytest.mark.parametrize("is_kv_consumer", [False, True])
+def test_pdmix_scale_checkpoint_preserves_storage_and_role(snapshot_enabled, is_kv_consumer):
+    ns = {"nn": torch.nn, "torch": torch, "Iterable": Iterable}
+    load_nodes("snapshot/model_runner_lifecycle/tensor_persistence.py", ["persist_tensor_attributes"], ns)
+    ns.update(
+        Base=object,
+        get_current_vllm_config=lambda: SimpleNamespace(snapshot_config=object() if snapshot_enabled else None),
+    )
+    load_nodes(
+        "quantization/methods/w8a8/w8a8_pdmix.py",
+        ["AscendW8A8PDMixLinearMethod"],
+        ns,
+        {"process_weights_after_loading"},
+    )
+    scheme = ns["AscendW8A8PDMixLinearMethod"]()
+    scheme._static_method = SimpleNamespace(process_weights_after_loading=Mock())
+    scheme._is_kv_consumer = is_kv_consumer
+    layer = torch.nn.Module()
+    layer.weight_scale = torch.nn.Parameter(torch.tensor([0.5, 2.0], dtype=torch.bfloat16), requires_grad=False)
+    scheme.process_weights_after_loading(layer)
+    scheme._static_method.process_weights_after_loading.assert_called_once_with(layer)
+    assert layer.is_kv_consumer is is_kv_consumer
+    expected = layer.weight_scale.float().clone()
+    torch.testing.assert_close(layer.weight_scale_fp32, expected)
+    assert ("weight_scale_fp32" in layer.state_dict()) is snapshot_enabled
+    assert ("weight_scale_fp32" in layer._buffers) is snapshot_enabled
+    if snapshot_enabled:
+        saved = io.BytesIO()
+        torch.save(layer.state_dict(), saved)
+        saved.seek(0)
+        checkpoint = torch.load(saved, weights_only=True)
+        original = layer.weight_scale_fp32
+        for _ in range(2):
+            original.zero_()
+            layer.load_state_dict(checkpoint)
+            assert layer.weight_scale_fp32 is original
+            torch.testing.assert_close(layer.weight_scale_fp32, expected)
+
+
+@pytest.mark.parametrize("fused_mc2", [False, True])
+def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2):
+    hook_ns = {"Base": object}
+    load_nodes("ops/fused_moe/moe_comm_method.py", ["MoECommMethod"], hook_ns, {HOOK})
+    base = hook_ns["MoECommMethod"]
+    hook_ns["Base"] = base
+    load_nodes("ops/fused_moe/moe_comm_method.py", ["FusedMC2CommImpl"], hook_ns, {HOOK})
+    cls = hook_ns["FusedMC2CommImpl"] if fused_mc2 else base
+    method = cls()
+    method.mega_moe_symm_buffer = object()
+    methods = {"active": method, "alias": method, "unused": base()}
+    for module_name, attrs in (
+        ("vllm.distributed.parallel_state", {"get_dp_group": Mock(), "get_ep_group": Mock()}),
+        ("vllm_ascend.distributed.parallel_state", {"get_mc2_group": Mock()}),
+        ("vllm_ascend.ops.fused_moe.moe_comm_method", {"_MoECommMethods": methods}),
+    ):
+        module = ModuleType(module_name)
+        vars(module).update(attrs)
+        monkeypatch.setitem(sys.modules, module_name, module)
+    ns = {
+        "time": SimpleNamespace(time=lambda: 0),
+        "logger": Mock(),
+        "set_current_vllm_config": lambda _: nullcontext(),
+        "get_distributed_init_method": lambda ip, port: f"tcp://{ip}:{port}",
+    }
+    load_nodes("snapshot/worker_lifecycle.py", ["_rebuild_parallel_groups"], ns)
+    force_ns = {"torch": torch}
+    load_nodes("ops/fused_moe/force_eplb.py", ["_build_round_robin_topk", "_build_or_get_topk"], force_ns)
+    method.moe_config = SimpleNamespace(ep_size=2, ep_rank=1)
+    ns["get_tp_group"] = Mock()
+    worker = SimpleNamespace(
+        rank=0,
+        vllm_config=SimpleNamespace(
+            parallel_config=SimpleNamespace(
+                data_parallel_master_ip="10.0.0.1", _snapshot_data_parallel_port_list=[29502]
+            )
+        ),
+        _init_worker_distributed_environment=Mock(),
+    )
+    kwargs = dict(top_k=2, num_logical_experts=8, dtype=torch.int32, device=torch.device("cpu"))
+    tables = [force_ns["_build_or_get_topk"](method, num_tokens=n, **kwargs) for n in (2, 8)]
+    expected = [table.clone() for table in tables]
+    for table in tables:
+        table.fill_(-1)  # Simulate lost device contents while Python cache keys survive.
+    cache = method._force_eplb_topk_cache
+    for _ in range(2):
+        ns["_rebuild_parallel_groups"](worker)
+        if fused_mc2:
+            assert method.mega_moe_symm_buffer is None
+        assert method._force_eplb_topk_cache is cache
+        assert cache == {}
+        for n, old, value in zip((2, 8), tables, expected):
+            rebuilt = force_ns["_build_or_get_topk"](method, num_tokens=n, **kwargs)
+            assert rebuilt is not old
+            torch.testing.assert_close(rebuilt, value)
+    assert not hasattr(methods["unused"], "_force_eplb_topk_cache")
 
 
 def test_pp_checkpoint_paths_isolate_stages_but_share_between_instances():

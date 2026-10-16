@@ -27,6 +27,8 @@ from typing import Any
 import torch
 from vllm.config import get_current_vllm_config
 
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import persist_tensor_attributes
+
 from ..base import AscendLinearScheme, PreparedLinearInput
 from ..registry import register_scheme
 from .w8a8_dynamic import AscendW8A8DynamicLinearMethod
@@ -90,4 +92,6 @@ class AscendW8A8PDMixLinearMethod(AscendLinearScheme):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         self._static_method.process_weights_after_loading(layer)
         layer.weight_scale_fp32 = layer.weight_scale.data.to(torch.float32)
+        if get_current_vllm_config().snapshot_config is not None:
+            persist_tensor_attributes(layer, ("weight_scale_fp32",))
         layer.is_kv_consumer = self._is_kv_consumer
