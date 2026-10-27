@@ -277,3 +277,48 @@ for the deployed model/configuration, especially PP/PCP, fixed-K speculation,
 KVPP, MiniMax fused kernels and GLM-5.3-Flash C8. A new container snapshot must
 be created from this exact pairing; restoring a process image created with the
 old baseline is unsupported.
+
+## Incremental migration to `snapshot_0.30.0rc2`
+
+### Pairing and history
+
+- Source: `snapshot_0.30.0_8233545b` at `445cdd1aa`; kept unchanged.
+- Target baseline: `upstream/releases/v0.30.0rc2` at
+  `7d825229c77025cfb185a010c25819c1214b9450` (fetched for this migration).
+- All 17 snapshot commits were replayed without conflicts. `git range-diff`
+  reports identical patches, including Triton cache invalidation, PDMix scale
+  persistence and force-EPLB cache invalidation.
+- vLLM pairing remains the local `snapshot_0.30.0` branch. No vLLM files,
+  checkpoint filenames or resume protocol were changed.
+
+### Incremental consumer-path review
+
+| Baseline delta | Lifecycle assessment |
+| --- | --- |
+| DSV4 MTP hidden buffer returns to lazy allocation | Forward writes the active hidden-state slice before the draft consumes it. Keep existing storage across restore and recapture; do not replace it merely because allocation became lazy. FULL graph/compiler behavior still requires hardware validation. |
+| PCP speculative decode sharding restriction and V2 metadata changes | Preserve the release branch's restrictions. Existing restore recreates the PCP manager, reconnects model/speculator references and resets request/speculator state before capture. Do not reintroduce main-branch feature behavior through the snapshot patch. |
+| MiniMax M3 TP decode scoring | TP group is obtained at forward time. Local block tables, context lengths, scores and top-k candidates are derived in forward; zero-block ranks initialize neutral candidates. No new model-owned tensor cache is introduced by this delta. |
+| MiniMax metadata and idle-DP flags | Active context-length slices are copied in build; cumulative lengths and start positions are recomputed. Dummy-forward flags belong to the forward context, not a persistent model cache. The retained attention-mask builder is already cleared by the metadata restore pass. |
+| KVPP speculative method restrictions | Retain release validation and layer-ownership rules. Existing V1/V2 restore rebuilds KVPP runtime; this delta adds no persistent native resource. |
+
+This is an incremental review of the baseline delta, not proof that every model
+and hardware combination is free of stale state. NPU restore, graph recapture,
+PD transfer, PP and numerical accuracy still require hardware acceptance.
+Create new snapshots from the new pairing; do not reuse process images from
+the previous baseline.
+
+### Validation
+
+- 86 independent snapshot contract tests passed.
+- 293 additional tests passed in isolated processes: checkpoint (4), worker
+  lifecycle (16), MiniMax metadata/scoring (88), fused preparation (17), PCP
+  manager (76), MTP/PCP (66), V2 restore (11), model-runner restore (13) and
+  distributed snapshot (2). MTP/PCP was rerun outside the socket-restricted
+  sandbox; the original single failure was `PermissionError` creating a socket.
+- Use `PYTHONPATH=/home/liu/vllm-project/vllm` for the paired source tree. The
+  installed vLLM in the local virtual environment lacks `IndexerKVDType`.
+  Combining these suites in one process also exposes cross-test mock pollution;
+  the results above are from separate invocations, without production changes.
+- `git diff --check` and default pre-commit checks passed. Manual markdownlint
+  reports pre-existing multiple top-level headings in this migration journal.
+- No NPU or container end-to-end test was performed locally.
