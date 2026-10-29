@@ -3,6 +3,7 @@
 import os
 import sys
 import types
+from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -130,12 +131,13 @@ def test_snapshot_resume_runs_npu_restore_phases(worker):
     rebuild_kv.assert_called_once_with(worker, "10.0.0.2", "engine-id")
 
 
-def test_reset_triton_kernel_caches():
+@pytest.mark.parametrize("cache_field", ["cache", "device_caches"])
+def test_reset_triton_kernel_caches(cache_field):
     from vllm_ascend.snapshot.worker_lifecycle import _reset_triton_kernel_caches
 
     class FakeJITFunction:
         def __init__(self):
-            self.device_caches = MagicMock()
+            setattr(self, cache_field, defaultdict(dict, {0: {"compiled": object()}}))
 
     class FakeAutotuner:
         def __init__(self):
@@ -155,25 +157,48 @@ def test_reset_triton_kernel_caches():
     upstream_module.kernel = nested_kernel
     module = types.ModuleType("vllm_ascend.test_snapshot_kernels")
     module.kernel = kernel
+    module.kernel_alias = kernel
     module.tuned_kernel = tuned_kernel
     module.heuristic_kernel = heuristic_kernel
     triton_runtime = types.ModuleType("triton.runtime")
     triton_runtime.JITFunction = FakeJITFunction
     triton_runtime.Autotuner = FakeAutotuner
     triton_runtime.Heuristics = FakeHeuristics
+    jit_kernels = [kernel, tuned_kernel.fn, heuristic_kernel.fn, nested_kernel.fn.fn]
+    caches = [getattr(item, cache_field) for item in jit_kernels]
 
     with patch.dict(
         sys.modules,
         {"triton.runtime": triton_runtime, module.__name__: module, upstream_module.__name__: upstream_module},
     ):
         _reset_triton_kernel_caches()
+        _reset_triton_kernel_caches()
 
-    kernel.device_caches.clear.assert_called_once_with()
-    tuned_kernel.cache.clear.assert_called_once_with()
-    tuned_kernel.fn.device_caches.clear.assert_called_once_with()
-    heuristic_kernel.fn.device_caches.clear.assert_called_once_with()
-    nested_kernel.fn.cache.clear.assert_called_once_with()
-    nested_kernel.fn.fn.device_caches.clear.assert_called_once_with()
+    for item, cache in zip(jit_kernels, caches):
+        assert getattr(item, cache_field) is cache
+        assert not cache
+        assert cache[0] == {}  # Device cache can be initialized again after restore.
+    assert tuned_kernel.cache.clear.call_count == 2
+    assert nested_kernel.fn.cache.clear.call_count == 2
+
+
+def test_reset_triton_kernel_caches_rejects_unknown_layout():
+    from vllm_ascend.snapshot.worker_lifecycle import _reset_triton_kernel_caches
+
+    class UnknownJITFunction:
+        pass
+
+    module = types.ModuleType("vllm_ascend.test_snapshot_kernels")
+    module.kernel = UnknownJITFunction()
+    triton_runtime = types.ModuleType("triton.runtime")
+    triton_runtime.JITFunction = UnknownJITFunction
+    triton_runtime.Autotuner = type("Autotuner", (), {})
+    triton_runtime.Heuristics = type("Heuristics", (), {})
+    with (
+        patch.dict(sys.modules, {"triton.runtime": triton_runtime, module.__name__: module}),
+        pytest.raises(RuntimeError, match="Unsupported Triton JIT cache layout"),
+    ):
+        _reset_triton_kernel_caches()
 
 
 def test_call_aclrt_snapshot_api_invokes_aclrt_library(worker):
