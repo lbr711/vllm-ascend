@@ -130,7 +130,14 @@ def _reset_triton_kernel_caches() -> None:
             return
         seen.add(id(kernel))
         if isinstance(kernel, JITFunction):
-            kernel.device_caches.clear()
+            # Triton Ascend 3.2.2 uses cache; newer runtimes use device_caches.
+            # Clear in place to preserve the defaultdict's device-cache factory.
+            if hasattr(kernel, "device_caches"):
+                kernel.device_caches.clear()
+            elif hasattr(kernel, "cache"):
+                kernel.cache.clear()
+            else:
+                raise RuntimeError("Unsupported Triton JIT cache layout during snapshot restore")
         elif isinstance(kernel, Autotuner):
             kernel.cache.clear()
             reset_kernel(kernel.fn)
