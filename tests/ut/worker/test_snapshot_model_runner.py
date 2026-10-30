@@ -205,9 +205,6 @@ def test_reset_v1_input_runtime_state():
             num_computed_tokens_cpu_tensor=torch.ones(4),
             num_prompt_tokens_cpu_tensor=torch.ones(4),
         ),
-        group_len=SimpleNamespace(gpu=torch.ones(4), cpu=torch.ones(4)),
-        group_key_idx=SimpleNamespace(gpu=torch.ones(4), cpu=torch.ones(4)),
-        group_key_cache_idx=SimpleNamespace(gpu=torch.ones(4), cpu=torch.ones(4)),
     )
 
     _reset_v1_input_runtime_state(runner)
@@ -217,9 +214,6 @@ def test_reset_v1_input_runtime_state():
     assert torch.count_nonzero(runner.input_batch.num_computed_tokens_cpu_tensor) == 0
     assert torch.count_nonzero(runner.input_batch.num_prompt_tokens_cpu_tensor) == 0
     runner.dcp_manager.reset_runtime_state_after_snapshot_restore.assert_called_once_with()
-    for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
-        assert torch.count_nonzero(staged.gpu) == 0
-        assert torch.count_nonzero(staged.cpu) == 0
 
 
 def test_reset_v1_block_tables():
