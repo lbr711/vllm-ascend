@@ -75,6 +75,11 @@ class MooncakeBaseConnector(KVConnectorBase_V1, SupportsHMA):
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig",
     ) -> None:
+        if vllm_config.snapshot_config is not None:
+            raise ValueError(
+                "MooncakeConnectorV2/MooncakePullConnector do not support snapshot restore; "
+                "use a snapshot-supported connector such as MooncakeConnectorV1."
+            )
         super().__init__(vllm_config, role, kv_cache_config)
         assert vllm_config.kv_transfer_config is not None
         assert vllm_config.kv_transfer_config.engine_id is not None

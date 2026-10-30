@@ -349,6 +349,11 @@ class AscendW4A8MXFPDynamicFusedMoEMethod(AscendMoEScheme):
             # gets zero-copy transposed views from _get_mlp_weights.
             layer.w13_weight_scale_list = [scale.clone() for scale in layer.w13_weight_scale.data.unbind(dim=0)]
             layer.w2_weight_scale_list = [scale.clone() for scale in layer.w2_weight_scale.data.unbind(dim=0)]
+            if getattr(get_current_vllm_config(), "snapshot_config", None) is not None:
+                persist_tensor_lists(
+                    layer,
+                    ("w13_weight_list", "w2_weight_list", "w13_weight_scale_list", "w2_weight_scale_list"),
+                )
             del layer.w13_weight
             del layer.w2_weight
             del layer.w13_weight_scale

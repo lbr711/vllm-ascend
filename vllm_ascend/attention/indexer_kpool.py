@@ -169,6 +169,9 @@ class AscendIndexerKPoolMetadataBuilder(AttentionMetadataBuilder):
         # Recapture rebuilds per-draft-step buffers using the restored slot mappings.
         self._metadata_buffers.clear()
         self._dsa_cp_query_buffers.clear()
+        self._captured_state_tables.clear()
+        self._state_table_scratch.clear()
+        self._state_table_shapes.clear()
 
     def _get_metadata_buffers(self, common_attn_metadata: CommonAttentionMetadata) -> _KPoolMetadataBuffers:
         key = common_attn_metadata.slot_mapping.data_ptr()

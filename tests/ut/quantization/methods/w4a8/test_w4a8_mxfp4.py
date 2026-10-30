@@ -212,6 +212,23 @@ class TestAscendW4A8MXFP4MoEMethod(TestBase):
         self.assertEqual(layer.w13_weight_scale.shape, (8, 2, 256, 2))
         self.assertEqual(layer.w2_weight_scale.shape, (8, 4, 128, 2))
 
+    @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.get_current_vllm_config")
+    @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.torch_npu")
+    def test_snapshot_persists_expert_lists_only_when_enabled(self, mock_npu, mock_vllm):
+        mock_npu.npu_format_cast.side_effect = lambda x, *a, **kw: x
+        self.scheme.use_expert_weight_list = True
+        for enabled in (False, True):
+            mock_vllm.return_value.snapshot_config = object() if enabled else None
+            layer = self._make_moe_layer()
+            self.scheme.process_weights_after_loading(layer)
+            for name in ("w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"):
+                self.assertFalse(hasattr(layer, name))
+                for index, tensor in enumerate(getattr(layer, f"{name}_list")):
+                    key = f"_snapshot_{name}_list_{index}"
+                    self.assertEqual(key in layer.state_dict(), enabled)
+                    if enabled:
+                        self.assertIs(layer.get_buffer(key), tensor)
+
     @staticmethod
     def _make_moe_layer():
         layer = nn.Module()
@@ -225,7 +242,9 @@ class TestAscendW4A8MXFP4MoEMethod(TestBase):
 
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.torch.npu.empty_cache")
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.torch_npu")
-    def test_process_weights_creates_eplb_lists_and_gmm_views(self, mock_npu, mock_empty_cache):
+    @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.get_current_vllm_config")
+    def test_process_weights_creates_eplb_lists_and_gmm_views(self, mock_config, mock_npu, mock_empty_cache):
+        mock_config.return_value.snapshot_config = None
         mock_npu.float4_e2m1fn_x2 = 296
         mock_npu.npu_format_cast.side_effect = lambda tensor, *args, **kwargs: tensor
         self.scheme.use_expert_weight_list = True

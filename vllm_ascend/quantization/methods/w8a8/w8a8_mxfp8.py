@@ -585,9 +585,10 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod(AscendMoEScheme):
         if getattr(get_current_vllm_config(), "snapshot_config", None) is not None:
             persist_tensor_lists(
                 layer,
-                tuple(f"{list_prefix}{name}_list" for name in (
-                    "w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"
-                )),
+                tuple(
+                    f"{list_prefix}{name}_list"
+                    for name in ("w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale")
+                ),
             )
 
         for tensor_name, parameter in layer._mxfp8_moe_parameters.items():

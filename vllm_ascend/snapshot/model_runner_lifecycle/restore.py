@@ -57,6 +57,11 @@ def _restore_model_runner_runtime_state(runner) -> None:
     else:
         _reset_v1_runner_runtime_state(runner)
     _reset_target_and_drafter_modules_after_restore(runner)
+    # Zeroers retain device-resident address/stride tables, not just KV views.
+    # Rebuild only when cold start constructed one, before any kernel consumes it.
+    zeroer_name = "kv_block_zeroer" if runner.vllm_config.use_v2_model_runner else "_kv_block_zeroer"
+    if getattr(runner, zeroer_name, None) is not None:
+        runner._init_kv_zero_meta()
     if runner.vllm_config.parallel_config.pipeline_parallel_size > 1:
         from vllm_ascend.snapshot.pipeline import restore_pipeline_runtime
 

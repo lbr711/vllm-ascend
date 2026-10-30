@@ -420,6 +420,25 @@ class TestAscendW8A8MXFP8MoEMethod(TestBase):
         self.assertEqual(scheme.group_size, 32)
 
     @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.get_current_vllm_config")
+    def test_snapshot_persists_expert_lists_only_when_enabled(self, mock_vllm):
+        self.scheme.use_expert_weight_list = True
+        for enabled in (False, True):
+            mock_vllm.return_value.snapshot_config = object() if enabled else None
+            layer = create_mxfp_moe_layer(
+                num_experts=self.num_experts,
+                hidden_size=self.hidden_size,
+                intermediate_size=self.intermediate_size,
+            )
+            self.scheme.process_weights_after_loading(layer)
+            for name in ("w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"):
+                self.assertFalse(hasattr(layer, name))
+                for index, tensor in enumerate(getattr(layer, f"{name}_list")):
+                    key = f"_snapshot_{name}_list_{index}"
+                    self.assertEqual(key in layer.state_dict(), enabled)
+                    if enabled:
+                        self.assertIs(layer.get_buffer(key), tensor)
+
+    @patch("vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.get_current_vllm_config")
     def test_mega_moe_uses_non_transposed_per_expert_payload(self, mock_vllm):
         mock_vllm.return_value = create_mock_vllm_config()
         mock_vllm.return_value.snapshot_config = object()
