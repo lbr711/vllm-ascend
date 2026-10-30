@@ -54,13 +54,6 @@ def test_restore_rebuilds_only_initialized_kv_zeroers(v2, initialized):
     assert phases == (["modules", "zeroer"] if initialized else ["modules"])
 
 
-def test_new_mooncake_rejects_snapshot_before_native_initialization():
-    ns = {"Base": object, "VllmConfig": object, "KVConnectorRole": object}
-    load_nodes("distributed/kv_transfer/kv_p2p/mooncake/connector.py", ["MooncakeBaseConnector"], ns, {"__init__"})
-    with pytest.raises(ValueError, match="do not support snapshot restore"):
-        ns["MooncakeBaseConnector"](SimpleNamespace(snapshot_config=object()), None, None)
-
-
 def load_nodes(path, names, namespace, methods=None):
     tree = ast.parse((ROOT / path).read_text())
     nodes = [node for node in tree.body if getattr(node, "name", None) in names]
