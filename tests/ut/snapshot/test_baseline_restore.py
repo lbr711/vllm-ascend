@@ -29,6 +29,36 @@ ROOT = Path(__file__).resolve().parents[3] / "vllm_ascend"
 HOOK = "reset_runtime_state_after_snapshot_restore"
 
 
+@pytest.mark.parametrize("use_dcp", [False, True])
+def test_v1_input_restore_without_removed_storekvblock_buffers(use_dcp):
+    ns = {}
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v1_input_runtime_state"], ns)
+    # Release v0.30.0 removed group_len/group_key_idx/group_key_cache_idx.
+    # Use a strict object, not MagicMock attributes masking missing fields.
+    runner = SimpleNamespace(
+        positions=torch.full((8,), 7),
+        _positions_cpu_buf=torch.full((8,), 7),
+        input_batch=SimpleNamespace(
+            num_computed_tokens_cpu_tensor=torch.full((4,), 7),
+            num_prompt_tokens_cpu_tensor=torch.full((4,), 7),
+        ),
+        use_dcp=use_dcp,
+        dcp_manager=SimpleNamespace(reset_runtime_state_after_snapshot_restore=Mock()),
+    )
+    tensors = (
+        runner.positions,
+        runner._positions_cpu_buf,
+        runner.input_batch.num_computed_tokens_cpu_tensor,
+        runner.input_batch.num_prompt_tokens_cpu_tensor,
+    )
+    pointers = [tensor.data_ptr() for tensor in tensors]
+    for _ in range(2):
+        ns["_reset_v1_input_runtime_state"](runner)
+        assert all(torch.count_nonzero(tensor) == 0 for tensor in tensors)
+        assert [tensor.data_ptr() for tensor in tensors] == pointers
+    assert runner.dcp_manager.reset_runtime_state_after_snapshot_restore.call_count == (2 if use_dcp else 0)
+
+
 @pytest.mark.parametrize("v2", [False, True])
 @pytest.mark.parametrize("initialized", [False, True])
 def test_restore_rebuilds_only_initialized_kv_zeroers(v2, initialized):

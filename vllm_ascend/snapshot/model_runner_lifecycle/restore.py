@@ -326,10 +326,6 @@ def _reset_v1_input_runtime_state(runner) -> None:
     if runner.use_dcp:
         runner.dcp_manager.reset_runtime_state_after_snapshot_restore()
 
-    for staged in (runner.group_len, runner.group_key_idx, runner.group_key_cache_idx):
-        staged.gpu.zero_()
-        staged.cpu.zero_()
-
 
 def _reset_v1_block_tables(runner) -> None:
     block_tables = runner.input_batch.block_table

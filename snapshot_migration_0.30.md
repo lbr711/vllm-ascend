@@ -2,6 +2,37 @@
 
 ## Release v0.30.0 migration (2026-10-30)
 
+### Restore field-contract follow-up (2026-10-31)
+
+The first failed resume in `vllm-d0-1-7996d5458c-wgj9z_node-37-211_0.txt`
+raises `AttributeError: NPUModelRunner.group_len` during model runtime reset.
+Release commit `c604a5c86` removed StoreKVBlock and all three runner buffers
+(`group_len`, `group_key_idx`, `group_key_cache_idx`), including their metadata
+and MTP consumers. Remove the obsolete reset, not a conditional `hasattr`
+fallback. The later runtime restore error occurs on a subsequent resume attempt.
+The old runner unit-test fixture incorrectly retained those removed fields;
+it is corrected and strict namespace tests cover both DCP settings, repeated
+reset and storage preservation without those attributes.
+
+Source review at `227ea9503` against baseline `66b5a5eac` covered the following
+field/API contracts for DSV4 Flash/Pro and GLM5.2 text inference:
+
+| Path | Checked ownership / restore contract |
+| --- | --- |
+| V1 input, block tables and MTP | Remaining input fields exist on the current runner/base; DCP reset is gated by `use_dcp`; MTP no longer consumes the removed group metadata. |
+| V2 runner, speculator and graph manager | Checked current upstream request/input/block-table owners and Ascend KVPP/PCP/graph interfaces against restore accesses. |
+| DSV4 DSA, CP/PCP and adjacent V4.1 hooks | Checked reset attributes against constructors and inherited definitions; metadata constants and nested builders retain their restore hooks. |
+| GLM SFA, Indexer/KPool, MLA and CP | Checked removed StoreKVBlock consumers, metadata-cache clearing and source-backed derived-weight rebuilds. |
+| O-proj weight switching / quantization | Configurations rebind current groups; independent gather inputs and repeated scales are rebuilt from restored local tensors. Collective destinations are overwritten before consumption. PDMix FP32 scales and actual Ascend expert maps remain persisted. |
+| New SFA/DSA O-proj collective buffers | Send padding is zeroed and active input copied; receive/reduce/output buffers are populated by collectives or full copy before reads, rather than requiring checkpoint persistence. |
+
+No additional deleted-field access was found in these inspected restore paths.
+This is a source-level contract review, not full coverage of every optional
+model/quantization/offload combination or proof of NPU numerical correctness.
+Multi-node Flash/Pro/GLM restore and graph replay still require hardware tests.
+
+### Migration history
+
 - Source: `snapshot_0.30.0rc2` at `a844cd4f6`, baseline `7d825229c`.
 - Target: `upstream/releases/v0.30.0` at `66b5a5eaca3dbf97aa4022e0d6170ba7ba53dc9f`.
 - New local branch: `snapshot_0.30.0`; the source branch is unchanged.
