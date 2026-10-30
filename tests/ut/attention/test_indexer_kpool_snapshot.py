@@ -9,10 +9,16 @@ def test_kpool_builder_discards_per_step_metadata_before_recapture():
     builder = AscendIndexerKPoolMetadataBuilder.__new__(AscendIndexerKPoolMetadataBuilder)
     builder._metadata_buffers = {123: (torch.ones(4),)}
     builder._dsa_cp_query_buffers = {123: torch.ones(4)}
+    builder._captured_state_tables = {(1, 2, 3): torch.ones(4)}
+    builder._state_table_scratch = {1: torch.ones(4)}
+    builder._state_table_shapes = {1: (2, 2)}
     builder.reset_runtime_state_after_snapshot_restore()
     builder.reset_runtime_state_after_snapshot_restore()
     assert builder._metadata_buffers == {}
     assert builder._dsa_cp_query_buffers == {}
+    assert builder._captured_state_tables == {}
+    assert builder._state_table_scratch == {}
+    assert builder._state_table_shapes == {}
 
 
 def test_kpool_indexer_rebuilds_derived_weights_after_restore():

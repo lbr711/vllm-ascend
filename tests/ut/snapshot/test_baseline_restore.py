@@ -29,6 +29,38 @@ ROOT = Path(__file__).resolve().parents[3] / "vllm_ascend"
 HOOK = "reset_runtime_state_after_snapshot_restore"
 
 
+@pytest.mark.parametrize("v2", [False, True])
+@pytest.mark.parametrize("initialized", [False, True])
+def test_restore_rebuilds_only_initialized_kv_zeroers(v2, initialized):
+    phases = []
+    ns = {
+        name: lambda *args: None
+        for name in (
+            "reload_cos_and_sin_after_restore",
+            "reset_moe_padding_cache_after_snapshot_restore",
+            "_reset_v1_runner_runtime_state",
+            "_reset_v2_runner_runtime_state",
+        )
+    }
+    ns["_reset_target_and_drafter_modules_after_restore"] = lambda runner: phases.append("modules")
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_restore_model_runner_runtime_state"], ns)
+    runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(use_v2_model_runner=v2, parallel_config=SimpleNamespace(pipeline_parallel_size=1)),
+        get_model=lambda: None,
+        _init_kv_zero_meta=lambda: phases.append("zeroer"),
+    )
+    setattr(runner, "kv_block_zeroer" if v2 else "_kv_block_zeroer", object() if initialized else None)
+    ns["_restore_model_runner_runtime_state"](runner)
+    assert phases == (["modules", "zeroer"] if initialized else ["modules"])
+
+
+def test_new_mooncake_rejects_snapshot_before_native_initialization():
+    ns = {"Base": object, "VllmConfig": object, "KVConnectorRole": object}
+    load_nodes("distributed/kv_transfer/kv_p2p/mooncake/connector.py", ["MooncakeBaseConnector"], ns, {"__init__"})
+    with pytest.raises(ValueError, match="do not support snapshot restore"):
+        ns["MooncakeBaseConnector"](SimpleNamespace(snapshot_config=object()), None, None)
+
+
 def load_nodes(path, names, namespace, methods=None):
     tree = ast.parse((ROOT / path).read_text())
     nodes = [node for node in tree.body if getattr(node, "name", None) in names]
@@ -987,9 +1019,13 @@ def test_kpool_discards_metadata_and_query_caches():
     builder = ns["AscendIndexerKPoolMetadataBuilder"]()
     builder._metadata_buffers = {1: object()}
     builder._dsa_cp_query_buffers = {2: torch.ones(2)}
+    caches = ("_captured_state_tables", "_state_table_scratch", "_state_table_shapes")
+    for name in caches:
+        setattr(builder, name, {1: object()})
     for _ in range(2):
         getattr(builder, HOOK)()
         assert not builder._metadata_buffers and not builder._dsa_cp_query_buffers
+        assert all(not getattr(builder, name) for name in caches)
 
 
 def test_multimodal_sentinel_cache_is_invalidated_without_changing_parameters():
@@ -1046,7 +1082,8 @@ def test_pcp_builder_resets_nested_global_builder():
 
 @pytest.mark.parametrize("initialized", [False, True])
 def test_mla_current_kv_index_constant_restored_in_place(initialized):
-    ns = {"Base": object, "torch": torch}
+    base_reset = Mock()
+    ns = {"Base": type("Base", (), {HOOK: lambda self: base_reset()}), "torch": torch}
     load_nodes("attention/context_parallel/mla_cp.py", ["AscendMlaDCPImpl"], ns, {HOOK})
     impl = ns["AscendMlaDCPImpl"]()
     impl._refresh_dcp_group = Mock()
@@ -1054,13 +1091,38 @@ def test_mla_current_kv_index_constant_restored_in_place(initialized):
     address = indices.data_ptr()
     scratch = torch.full((8,), 456)
     impl._dcp_current_kv_buffers = (scratch, scratch, indices) if initialized else None
+    prefill_indices = torch.full((16,), 789, dtype=torch.int64)
+    impl._dcp_prefill_current_kv_buffers = (scratch, scratch, prefill_indices) if initialized else None
     for _ in range(2):
         getattr(impl, HOOK)()
         if initialized:
             torch.testing.assert_close(indices, torch.arange(8))
             assert indices.data_ptr() == address
+            torch.testing.assert_close(prefill_indices, torch.arange(16))
         assert (scratch == 456).all()  # Overwritten by prolog, not a constant.
     assert impl._refresh_dcp_group.call_count == 2
+    assert base_reset.call_count == 2
+
+
+def test_mla_base_restores_writer_indices_and_refreshes_prolog():
+    rebuild = "rebuild_derived_tensors_after_snapshot_restore"
+    ns = {"Base": object, "torch": torch}
+    load_nodes("attention/mla_v1.py", ["AscendMLAImpl"], ns, {HOOK, rebuild})
+    impl = ns["AscendMLAImpl"]()
+    impl._refresh_prolog_v3_weights = Mock()
+    scratch = torch.full((4,), 99)
+    indices = [torch.full((4,), -1, dtype=torch.int64) for _ in range(2)]
+    impl._strided_kv_workspace = (scratch, scratch, indices[0])
+    impl._flashmla_writer_buffers = (scratch, scratch, indices[1])
+    addresses = [tensor.data_ptr() for tensor in indices]
+    for _ in range(2):
+        getattr(impl, rebuild)(torch.bfloat16)
+        getattr(impl, HOOK)()
+        for tensor, address in zip(indices, addresses):
+            torch.testing.assert_close(tensor, torch.arange(4))
+            assert tensor.data_ptr() == address
+        assert (scratch == 99).all()
+    assert impl._refresh_prolog_v3_weights.call_count == 2
 
 
 def test_dsa_builder_invalidates_turboquant_geometry():

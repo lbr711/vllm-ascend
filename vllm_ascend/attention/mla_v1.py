@@ -1438,6 +1438,18 @@ class AscendMLAImpl(MLAAttentionImpl):
         cache_spec = attn_module.get_kv_cache_spec(config)
         if supports_strided_mla_cache(config, attn_module, cache_spec):
             self._prepare_prolog_v3_weights()
+
+    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
+        # Retained source projections have been restored before this hook.
+        self._refresh_prolog_v3_weights()
+
+    def reset_runtime_state_after_snapshot_restore(self) -> None:
+        for buffers in (self._strided_kv_workspace, self._flashmla_writer_buffers):
+            if buffers is not None:
+                # KV scratch is overwritten by prolog; slot indices are constants.
+                indices = buffers[2]
+                indices.copy_(torch.arange(indices.numel(), dtype=indices.dtype, device=indices.device))
+
     def _persist_snapshot_derived_tensors(self) -> None:
         if self.vllm_config.snapshot_config is None:
             return

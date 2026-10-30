@@ -50,7 +50,7 @@ def _make_mlapo_reload_impl(native):
     impl.dcp_enabled = impl.pcp_enabled = impl.is_pcp_decode_sharded = False
     impl.is_draft_model = False
     impl._strided_kv_workspace = None
-    impl.vllm_config = SimpleNamespace()
+    impl.vllm_config = SimpleNamespace(snapshot_config=None)
     quant_method = (
         UnquantizedLinearMethod()
         if native
@@ -317,6 +317,7 @@ def test_mxfp8_mla_fused_preprocess_owns_nz_conversion(
     original_weights = [layer.weight.float().clone() for layer in projections]
     original_scales = [layer.weight_scale.clone() for layer in projections]
     config = SimpleNamespace(
+        snapshot_config=None,
         model_config=SimpleNamespace(runner_type="draft" if is_draft else "generate", dtype=torch.bfloat16),
         parallel_config=SimpleNamespace(prefill_context_parallel_size=1, decode_context_parallel_size=1),
         cache_config=SimpleNamespace(cache_dtype="float16"),
@@ -424,6 +425,7 @@ def test_mla_fused_preprocess_checks_weight_support(quant_method, device_type, e
 @pytest.mark.parametrize("scheme_type", [AscendW8A8LinearMethod, AscendW8A8MXFP8DynamicLinearMethod])
 def test_mla_nz_management_respects_hardware_profile(device_type, enable_mlapo, fa_quant_layer, scheme_type):
     impl = AscendMLAImpl.__new__(AscendMLAImpl)
+    impl.vllm_config = SimpleNamespace(snapshot_config=None)
     impl.use_flashmla = False
     profile = get_hardware_profile(device_type)
     impl.support_fp8_attention = profile.supports(HardwareCapability.FP8_ATTENTION)
@@ -471,6 +473,7 @@ def test_mla_nz_management_respects_hardware_profile(device_type, enable_mlapo, 
 )
 def test_mla_dynamic_int8_weight_whitelist(device_type, scheme_type, expected_enabled):
     impl = AscendMLAImpl.__new__(AscendMLAImpl)
+    impl.vllm_config = SimpleNamespace(snapshot_config=None)
     impl.use_flashmla = False
     profile = get_hardware_profile(device_type)
     impl.support_fp8_attention = profile.supports(HardwareCapability.FP8_ATTENTION)
@@ -2729,6 +2732,7 @@ class TestAscendMLAImpl(TestBase):
     @patch("torch_npu.npu_format_cast")
     def test_process_weights_after_loading_refreshes_prolog_v3_weights(self, mock_format_cast, mock_maybe_trans_nz):
         """A weight reload must refresh graph-captured PROLOG_V3 projections."""
+        self.impl.vllm_config.snapshot_config = None
         self.impl.num_heads = 8
         self.impl.num_heads_padded = 8
         self.impl.head_padding = 0

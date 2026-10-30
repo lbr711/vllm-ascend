@@ -1,5 +1,57 @@
 # Snapshot migration to vLLM 0.30.0
 
+## Release v0.30.0 migration (2026-10-30)
+
+- Source: `snapshot_0.30.0rc2` at `a844cd4f6`, baseline `7d825229c`.
+- Target: `upstream/releases/v0.30.0` at `66b5a5eaca3dbf97aa4022e0d6170ba7ba53dc9f`.
+- New local branch: `snapshot_0.30.0`; the source branch is unchanged.
+- All 19 snapshot commits were replayed. Conflicts occurred in KPool metadata,
+  MLA weight initialization, MLA CP helpers, pool-worker method insertion and
+  MXFP8 expert-weight processing/tests. Keep the release's constructors, layouts
+  and RL refresh logic, then attach snapshot hooks to those implementations.
+- This release diverges from the rc2 baseline; it is not merely a tag change.
+
+### Additional state adaptation
+
+| Owner / first consumer | Restore action |
+| --- | --- |
+| MLA PROLOG_V3 private weight dictionary | Rebuild from restored source projections using the baseline in-place refresh; preserve dictionary and tensor identities. |
+| MLA strided writer / FlashMLA / DCP decode and prefill workspaces | Restore constant slot-index arrays in place; prolog overwrites the active KV scratch before reading it. |
+| KPool metadata builder | Clear captured state tables, scratch and shape caches together with per-step metadata/query caches before recapture. |
+| W4A8 MXFP4 and W8A8 MXFP8 per-expert lists | Persist the actual list operands before their original Parameters are removed, only when snapshot is enabled. Preserve the existing MegaMoE list coverage. |
+| V1/V2 KV block zeroer | Recreate initialized zeroers after module restore: their device address/stride/page tables cannot survive as stale device contents. Do not create a zeroer where cold start did not initialize one. |
+
+The new `MooncakeConnectorV2` / `MooncakePullConnector` implementation has no
+snapshot endpoint lifecycle yet. Reject snapshot configuration for that new
+implementation rather than inheriting no-op restore methods. Existing
+MooncakeConnectorV1, Hybrid, Layerwise and store snapshot hooks remain in place.
+The new pool layerwise key helpers retain topology-derived host values rather
+than introducing a separate transport owner.
+
+### Dependency and validation boundaries
+
+- Target pins include torch 2.10.0, torch-npu 2.10.0.post7,
+  triton-ascend 3.6.0.post2, memfabric-hybrid/memcache-hybrid 1.3.0;
+  the Dockerfile defaults to CANN 9.2.1 and vLLM v0.30.0.
+- Inspected the exact aarch64 `triton-ascend==3.6.0.post2` wheel from the Ascend
+  package index. `JITFunction.device_caches` is a defaultdict whose per-device
+  entries contain compiled kernels and binders. Autotuner still owns `cache`
+  and wraps `fn`; Heuristics wraps `fn`. The existing reset clears in place and
+  preserves the defaultdict factory. No dependency installation was performed.
+- CPU/mock tests and source inspection do not establish NPU numerical accuracy
+  or native library restore compatibility. Test new snapshots on the target
+  image; do not reuse snapshots or weight artifacts from the older baseline.
+- This review covers migrated lifecycle hooks and the changed state listed
+  above, not every newly introduced model/quantization/offload combination.
+  New connector support, NPU graph capture, distributed PD/PP, pooling and
+  workload accuracy require separate hardware acceptance.
+- Validation: 477 tests passed and 3 skipped in isolated CPU/mock invocations:
+  baseline restore (92), worker lifecycle (18), MXFP4 (23), MXFP8 (29),
+  V2 restore (11), model-runner restore (13), checkpoint (4), KPool restore (3),
+  MLA (210), MLA CP (64 passed / 3 skipped), PROLOG_V3 composition (10).
+  Updated hand-built test configs to explicitly set `snapshot_config=None`.
+  `git diff --check` and default pre-commit checks passed.
+
 ## Pairing
 
 | Repository | Source snapshot tip | New baseline | New branch |
