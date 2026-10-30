@@ -75,11 +75,6 @@ class MooncakeBaseConnector(KVConnectorBase_V1, SupportsHMA):
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig",
     ) -> None:
-        if vllm_config.snapshot_config is not None:
-            raise ValueError(
-                "MooncakeConnectorV2/MooncakePullConnector do not support snapshot restore; "
-                "use a snapshot-supported connector such as MooncakeConnectorV1."
-            )
         super().__init__(vllm_config, role, kv_cache_config)
         assert vllm_config.kv_transfer_config is not None
         assert vllm_config.kv_transfer_config.engine_id is not None
@@ -89,6 +84,23 @@ class MooncakeBaseConnector(KVConnectorBase_V1, SupportsHMA):
         self.kv_transfer_config = vllm_config.kv_transfer_config
         self.connector_scheduler: MooncakeBaseConnectorScheduler | None = None
         self.connector_worker: MooncakeBaseConnectorWorker | None = None
+
+    def prepare_for_snapshot_restore(self) -> None:
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.prepare_for_snapshot_restore()
+        if self.connector_worker is not None:
+            self.connector_worker.prepare_for_snapshot_restore()
+        self.clear_connector_metadata()
+
+    def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
+        if new_engine_id is not None:
+            self.engine_id = new_engine_id
+            self.kv_transfer_config.engine_id = new_engine_id
+        if self.connector_scheduler is not None:
+            self.connector_scheduler.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+        if self.connector_worker is not None:
+            self.connector_worker.rebuild_kv_transfer_endpoint(local_ip, new_engine_id)
+        self.clear_connector_metadata()
 
     def shutdown(self) -> None:
         if self.connector_scheduler is not None:

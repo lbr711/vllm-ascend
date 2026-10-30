@@ -21,10 +21,17 @@
 | W4A8 MXFP4 and W8A8 MXFP8 per-expert lists | Persist the actual list operands before their original Parameters are removed, only when snapshot is enabled. Preserve the existing MegaMoE list coverage. |
 | V1/V2 KV block zeroer | Recreate initialized zeroers after module restore: their device address/stride/page tables cannot survive as stale device contents. Do not create a zeroer where cold start did not initialize one. |
 
-The new `MooncakeConnectorV2` / `MooncakePullConnector` implementation has no
-snapshot endpoint lifecycle yet. Reject snapshot configuration for that new
-implementation rather than inheriting no-op restore methods. Existing
-MooncakeConnectorV1, Hybrid, Layerwise and store snapshot hooks remain in place.
+The new `MooncakeConnectorV2` / `MooncakePullConnector` implementation now uses
+the existing two-phase snapshot endpoint lifecycle. The Pull worker stops and
+joins its receiving thread and executor before releasing registered regions and
+all engine references. Rebuild refreshes identity, TP group and ports, registers
+the retained cache tensors and starts a new consumer thread with empty remote
+metadata/request caches. Scheduler rebuild closes the old control threads and
+sockets; P publishes metadata only after EngineCore collects fresh worker
+handshakes. Missing registrations and thread-exit failures raise errors rather
+than skipping cleanup. No new vLLM resume protocol or V1/Hybrid implementation
+changes are required. The temporary V2/Pull snapshot rejection was removed.
+Existing MooncakeConnectorV1, Hybrid, Layerwise and store snapshot hooks remain in place.
 The new pool layerwise key helpers retain topology-derived host values rather
 than introducing a separate transport owner.
 
@@ -43,7 +50,7 @@ than introducing a separate transport owner.
   image; do not reuse snapshots or weight artifacts from the older baseline.
 - This review covers migrated lifecycle hooks and the changed state listed
   above, not every newly introduced model/quantization/offload combination.
-  New connector support, NPU graph capture, distributed PD/PP, pooling and
+  V2/Pull transport, NPU graph capture, distributed PD/PP, pooling and
   workload accuracy require separate hardware acceptance.
 - Validation: 477 tests passed and 3 skipped in isolated CPU/mock invocations:
   baseline restore (92), worker lifecycle (18), MXFP4 (23), MXFP8 (29),
@@ -51,6 +58,10 @@ than introducing a separate transport owner.
   MLA (210), MLA CP (64 passed / 3 skipped), PROLOG_V3 composition (10).
   Updated hand-built test configs to explicitly set `snapshot_config=None`.
   `git diff --check` and default pre-commit checks passed.
+- V2/Pull follow-up validation: 311 CPU/mock tests passed in isolated runs:
+  snapshot lifecycle (11), base worker (58), Pull worker (97), connector (6),
+  Pull scheduler (48), baseline restore (91). Default pre-commit checks passed.
+  This does not replace a multi-node NPU snapshot/restore test.
 
 ## Pairing
 
