@@ -29,6 +29,13 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
 from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
 from vllm.model_executor.utils import replace_parameter
 
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import (
+    persist_tensor_attributes,
+    persist_tensor_lists,
+)
+
+# Keep snapshot imports separate from the baseline imports patched by FT.
+# isort: split
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, use_cann_megamoe
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
@@ -46,10 +53,6 @@ from vllm_ascend.ops.fused_moe.moe_comm_method import (
 )
 from vllm_ascend.ops.fused_moe.moe_utils import get_moe_num_logical_experts
 from vllm_ascend.quantization.quant_type import QuantType
-from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import (
-    persist_tensor_attributes,
-    persist_tensor_lists,
-)
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, maybe_trans_nz
 
 
