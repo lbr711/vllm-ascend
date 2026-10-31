@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
-# 从 vllm / vllm-ascend 仓库生成 site-packages 可用的 snapshot patch（不含 tests）
+# 从 vllm / vllm-ascend 仓库生成 site-packages 可用的代码 patch (不含 tests)
 #
 # 用法:
-#   gen_snapshot_patch.sh [选项]
+#   bash gen_patch.sh [选项]
 #
 # 选项:
 #   -r, --repo PATH       仓库路径 (默认: 当前目录)
-#   -b, --base COMMIT     基准提交 / tag（必填）
-#   -B, --branch NAME     期望分支名（可选；不一致时仅警告）
-#   -p, --path DIR        纳入 patch 的包目录，如 vllm/ 或 vllm_ascend/
-#                         （默认: 自动检测仓库内的 vllm_ascend/ 或 vllm/）
+#   -b, --base COMMIT     基准提交 / tag (必填)
+#   -B, --branch NAME     期望分支名 (可选; 不一致时退出)
+#   -p, --path DIR        纳入 patch 的包目录, 如 vllm/ 或 vllm_ascend/
+#                         (默认: 自动检测仓库内的 vllm_ascend/ 或 vllm/)
 #   -o, --output-dir DIR  输出目录 (默认: 本脚本所在目录)
 #   -n, --name NAME       输出文件名 (默认: 自动递增 <pkg>_<branch>_site_packages_vN.patch)
-#   -f, --force           覆盖已存在的同名 patch（默认不覆盖）
+#   -f, --force           覆盖已存在的同名 patch (默认不覆盖)
 #   -h, --help            显示帮助
 #
-# 示例:
-#   # vllm-ascend: b89a49164 → snapshot_b111
-#   ./gen_snapshot_patch.sh \
+# 示例 (先提交代码并切换到对应分支, 再在本脚本目录执行):
+#   # vllm-ascend: 0.30.0 基线 66b5a5eac -> 当前 snapshot_0.30.0 HEAD
+#   bash gen_patch.sh \
 #     -r /home/liu/vllm-project/vllm-ascend \
-#     -b b89a49164 \
-#     -B snapshot_b111
+#     -b 66b5a5eac \
+#     -B snapshot_0.30.0
 #
-#   # vllm: v0.23.0 → snapshot_0.23.0
-#   ./gen_snapshot_patch.sh \
+#   # vllm: v0.30.0 -> 当前 snapshot_0.30.0 HEAD
+#   bash gen_patch.sh \
 #     -r /home/liu/vllm-project/vllm \
-#     -b v0.23.0 \
-#     -B snapshot_0.23.0
+#     -b v0.30.0 \
+#     -B snapshot_0.30.0
 
 set -euo pipefail
 
@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$BASE_COMMIT" ]; then
-    echo "错误: 必须指定基准提交，例如 -b b89a49164 或 -b v0.23.0"
+    echo "错误: 必须指定基准提交, 例如 -b 66b5a5eac 或 -b v0.30.0"
     usage
     exit 1
 fi
@@ -69,7 +69,14 @@ if [ ! -d "$REPO/.git" ]; then
     exit 1
 fi
 
-# 归一化包路径：去掉首尾斜杠，再统一成 "name/"
+REPO="$(cd "$REPO" && pwd)"
+CURRENT_BRANCH=$(git -C "$REPO" rev-parse --abbrev-ref HEAD)
+if [ -n "$BRANCH" ] && [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
+    echo "错误: 当前分支为 $CURRENT_BRANCH, 期望 $BRANCH"
+    exit 1
+fi
+
+# 归一化包路径: 去掉末尾 / 和开头 ./, 再统一成 "name/"
 normalize_pkg_path() {
     local p="${1%/}"
     p="${p#./}"
@@ -78,7 +85,7 @@ normalize_pkg_path() {
 
 detect_pkg_path() {
     if [ -d "$REPO/vllm_ascend" ] && [ -d "$REPO/vllm" ]; then
-        echo "错误: 仓库同时存在 vllm_ascend/ 与 vllm/，请用 -p 显式指定" >&2
+        echo "错误: 仓库同时存在 vllm_ascend/ 与 vllm/, 请用 -p 显式指定" >&2
         return 1
     fi
     if [ -d "$REPO/vllm_ascend" ]; then
@@ -89,7 +96,7 @@ detect_pkg_path() {
         echo "vllm/"
         return 0
     fi
-    echo "错误: 未找到 vllm_ascend/ 或 vllm/，请用 -p 指定包目录" >&2
+    echo "错误: 未找到 vllm_ascend/ 或 vllm/, 请用 -p 指定包目录" >&2
     return 1
 }
 
@@ -105,12 +112,14 @@ if [ ! -d "$REPO/${PKG_PATH%/}" ]; then
 fi
 
 PKG_NAME="${PKG_PATH%/}"
-BRANCH_LABEL="${BRANCH:-$(cd "$REPO" && git rev-parse --abbrev-ref HEAD)}"
-# 分支名里的 / 等字符换成 _；命名对齐旧脚本: <pkg>_<branch>_site_packages_vN.patch
+BRANCH_LABEL="$CURRENT_BRANCH"
+# 分支名里的 / 等字符换成 _; 命名对齐旧脚本: <pkg>_<branch>_site_packages_vN.patch
 SAFE_BRANCH="$(echo "$BRANCH_LABEL" | tr '/ ' '__')"
 PATCH_PREFIX="${PKG_NAME}_${SAFE_BRANCH}_site_packages"
 
 mkdir -p "$OUTPUT_DIR"
+# 在切换仓库目录前固定输出路径, -o 的相对路径以调用目录为准.
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 next_version_name() {
     local max=0
@@ -135,8 +144,8 @@ else
 fi
 
 if [ -f "$OUT_FILE" ] && [ "$FORCE" != "1" ]; then
-    echo "错误: 文件已存在，未覆盖: $OUT_FILE"
-    echo "提示: 使用 -f 强制覆盖，或省略 -n 让脚本自动递增版本号"
+    echo "错误: 文件已存在, 未覆盖: $OUT_FILE"
+    echo "提示: 使用 -f 强制覆盖, 或省略 -n 让脚本自动递增版本号"
     exit 1
 fi
 
@@ -145,11 +154,6 @@ cd "$REPO"
 if ! git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
     echo "错误: 基准提交不存在: $BASE_COMMIT"
     exit 1
-fi
-
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ -n "$BRANCH" ] && [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
-    echo "警告: 当前分支为 $CURRENT_BRANCH，期望 $BRANCH"
 fi
 
 HEAD_COMMIT=$(git rev-parse HEAD)
@@ -161,7 +165,7 @@ fi
 echo ">>> 仓库:     $REPO"
 echo ">>> 分支:     $CURRENT_BRANCH (HEAD: $HEAD_COMMIT)"
 echo ">>> 基准:     $BASE_COMMIT"
-echo ">>> 包路径:   $PKG_PATH （tests/ 不纳入）"
+echo ">>> 包路径:   $PKG_PATH (tests/ 不纳入)"
 echo ">>> 输出:     $OUT_FILE"
 echo ""
 
@@ -169,8 +173,16 @@ echo ">>> 包含的提交:"
 git log --oneline "${BASE_COMMIT}..HEAD"
 echo ""
 
-CHANGED_FILES=$(git diff --name-only "${BASE_COMMIT}..HEAD" -- "$PKG_PATH" || true)
-TEST_IN_DIFF=$(git diff --name-only "${BASE_COMMIT}..HEAD" -- tests/ || true)
+# 固定 GNU patch -p1 所需的文本格式, 不受用户 diff 配置影响.
+DIFF=(git diff --no-color --no-ext-diff --no-textconv --no-renames --no-relative
+      --src-prefix=a/ --dst-prefix=b/ --unified=3)
+CHANGED_FILES=$("${DIFF[@]}" --name-only "${BASE_COMMIT}..HEAD" -- "$PKG_PATH")
+TEST_IN_DIFF=$("${DIFF[@]}" --name-only "${BASE_COMMIT}..HEAD" -- tests/)
+DIFF_STAT=$("${DIFF[@]}" --numstat "${BASE_COMMIT}..HEAD" -- "$PKG_PATH")
+if awk -F '\t' '$1 == "-" && $2 == "-" { found=1 } END { exit !found }' <<< "$DIFF_STAT"; then
+    echo "错误: 包目录包含二进制改动, 不能生成供 patch -p1 使用的文本补丁"
+    exit 1
+fi
 
 if [ -z "$CHANGED_FILES" ]; then
     echo "错误: ${BASE_COMMIT}..HEAD 之间没有 ${PKG_PATH} 变更"
@@ -182,15 +194,15 @@ echo "$CHANGED_FILES" | sed 's/^/  /'
 
 if [ -n "$TEST_IN_DIFF" ]; then
     echo ""
-    echo ">>> 已排除 tests/ 变更 ($(echo "$TEST_IN_DIFF" | wc -l) 个，不写入 patch):"
+    echo ">>> 已排除 tests/ 变更 ($(echo "$TEST_IN_DIFF" | wc -l) 个, 不写入 patch):"
     echo "$TEST_IN_DIFF" | sed 's/^/  /'
 fi
 
-# 仅导出包目录，天然排除 tests/ 以及其它仓库根文件
-git diff "${BASE_COMMIT}..HEAD" -- "$PKG_PATH" > "$OUT_FILE"
+# 仅导出包目录, 天然排除 tests/ 以及其它仓库根文件
+"${DIFF[@]}" "${BASE_COMMIT}..HEAD" -- "$PKG_PATH" > "$OUT_FILE"
 
 PATCH_FILES=$(grep -c '^diff --git' "$OUT_FILE" || true)
-# 兜底：确认 patch 正文里没有 tests/ 路径
+# 兜底: 确认 patch 正文里没有 tests/ 路径
 if grep -E '^(diff --git a/|\+\+\+ b/|--- a/)tests/' "$OUT_FILE" >/dev/null 2>&1; then
     echo "错误: patch 中意外包含 tests/ 路径"
     rm -f "$OUT_FILE"
