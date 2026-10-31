@@ -198,8 +198,12 @@ if [ -n "$TEST_IN_DIFF" ]; then
     echo "$TEST_IN_DIFF" | sed 's/^/  /'
 fi
 
-# 仅导出包目录, 天然排除 tests/ 以及其它仓库根文件
-"${DIFF[@]}" "${BASE_COMMIT}..HEAD" -- "$PKG_PATH" > "$OUT_FILE"
+# 记录生成基线, git apply / patch 会忽略正文前的说明头.
+# 仅导出包目录, 天然排除 tests/ 以及其它仓库根文件.
+{
+    printf 'Base-Revision: %s (%s)\n\n' "$BASE_COMMIT" "$(git rev-parse "${BASE_COMMIT}^{commit}")"
+    "${DIFF[@]}" "${BASE_COMMIT}..HEAD" -- "$PKG_PATH"
+} > "$OUT_FILE"
 
 PATCH_FILES=$(grep -c '^diff --git' "$OUT_FILE" || true)
 # 兜底: 确认 patch 正文里没有 tests/ 路径
