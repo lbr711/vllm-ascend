@@ -14,8 +14,24 @@ docker pull --platform=arm64 swr.cn-south-1.myhuaweicloud.com/ascendhub/mindie-m
 
 启动命令： 
 ```shell
-bash /code/boot.sh
+# 单容器 DP4 x TP4, 需要 16 个可见 NPU 逻辑设备.
+bash /code/master.sh
 ```
+
+两个节点分别运行 DP2 x TP4 时 (全局 DP4, 每个容器需要 8 个逻辑设备):
+
+```shell
+# master 节点: 先把 master.sh 的 --data-parallel-size-local 4 改为 2.
+bash /code/master.sh
+# slave 节点
+bash /code/slave.sh
+```
+
+两个入口各自完成补丁应用、rank table 等待和引擎启动, 不再调用其它启动 shell.
+均要求设置 POD_IP. 总 DP 数、本地 DP 数、TP 数和 RPC 端口直接在各脚本的 vllm serve 命令中修改.
+master 默认 DP4/local4/TP4, slave 为 DP4/local2/TP4, RPC 端口均为 13389.
+沿用原逻辑: snapshot_enable 只控制 metadata watcher, 引擎仍传入 snapshot-config.
+健康检查仅用于提供 HTTP 服务的 master, headless slave 不提供该接口.
 
 健康检查，就绪探针：
 ```shell
