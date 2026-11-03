@@ -497,3 +497,41 @@ fresh snapshot creation, restore/recapture, text and image requests, repeated
 prefixes crossing Mamba block boundaries, changed batch sizes and MTP acceptance
 on the actual A2/A3 image. No claim is made that every quantized export or
 uninspected backend variant is fully supported.
+
+## GLM-5.3-Flash A2 PD follow-up
+
+Reviewed against local snapshot HEAD `8089520f9` and the GLM-5.3-Flash
+tutorial's A2 PD example: V1 runner, P DP2/TP8 with FlashComm1/DSA CP,
+D DP8/TP2, W8A8, INT8 KV and indexer caches, MooncakeConnectorV2,
+five MTP tokens, and D-side FULL_DECODE_ONLY plus draft graphs.
+
+Confirmed gap: `Glm5NextLinearAttention._merged_conv_weight` is a lazy
+concatenation of the registered q/k/v convolution Parameters. It is an
+independent unregistered tensor, and `_forward` only initializes it when None.
+Restoring the source Parameters does not restore this copy. The existing
+derived-tensor dispatcher now rebuilds initialized copies in place before
+recapture. Uninitialized copies remain lazy. Cold-start computation is unchanged.
+CPU tests execute the production build/hook/dispatcher, cover absent and
+initialized inference tensors, repeated restore, values and storage identity.
+
+Adjacent paths inspected:
+
+- KDA A_log, dt_bias, projections, gated norm and mHC tensors are Parameters;
+  convolution/recurrent request state uses the runner's Mamba cache lifecycle.
+  The preceding Mamba input/address-table reset fixes remain applicable.
+- KDA optional output-projection collective scratch is overwritten by zero/copy
+  and collectives before consumption, not a weight requiring persistence.
+- KPool indexer derived projection/norm copies already have a rebuild hook;
+  top-k buffers and pointer-keyed metadata tables already have reset hooks.
+- MTP constructs MLA decoder layers, not KDA layers. Its weights use the draft
+  checkpoint; its proposer inputs and attention builders use existing resets.
+  Normal propose sets skip_topk=False at step zero before reusing indices later.
+- Mooncake V2 uses existing endpoint teardown/rebuild and cache registration;
+  this fix does not change transport ownership or thread handling.
+
+This is not an end-to-end support guarantee. The deployed quantization export,
+native CANN/fla_npu kernels, static-kernel graph recapture, multimodal requests
+and cross-node transfer require A2 validation. In particular, the tutorial's
+`pin_memory_expandable_segments:True` must be checked against the snapshot
+runtime's supported pinned-memory allocator; do not assume it is host-pin merely
+because the Python model-state audit passes.
