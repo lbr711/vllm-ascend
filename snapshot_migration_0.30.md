@@ -416,3 +416,84 @@ the previous baseline.
 - `git diff --check` and default pre-commit checks passed. Manual markdownlint
   reports pre-existing multiple top-level headings in this migration journal.
 - No NPU or container end-to-end test was performed locally.
+
+## Qwen3.6-27B W8A8 restore audit
+
+Inspected local Ascend revision `f7e5821f0` and paired vLLM `8dd67ddead`.
+Scope: DP1/TP2, BF16 activations, Ascend W8A8, Qwen3.5 MTP (3 draft
+tokens), FULL_DECODE_ONLY, multimodal processor cache disabled. The public
+[model config](https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/config.json)
+selects `Qwen3_5ForConditionalGeneration`: dense GDN/full-attention hybrid,
+vision encoder and one MTP layer, not the Qwen3-30B-A3B MoE path.
+The [Ascend deployment guide](https://docs.vllm.ai/projects/ascend/en/v0.30.0/tutorials/models/Qwen3.5-27B-Qwen3.6-27B.html)
+links Eco-Tech's W8A8 export. The user's actual quantization description and
+hardware type have not been supplied; the public model config is a reference,
+not proof of the local artifact's per-layer quantization choices.
+
+### Confirmed gap and minimal lifecycle change
+
+Mamba align state copies retain device pointer/stride tables in
+`MambaSpecDecodeGPUContext`, guarded by the Python `is_initialized` flag.
+These tables are outside model state_dict. A previously initialized context
+can survive restore without its device contents being restored. Prefix caching
+can select align mode through `MambaModelConfig.verify_and_update_config`;
+this is not restricted to PD deployments.
+
+- V1: clear request state indices and discard `_mamba_bufs`/`_mamba_copy_bufs`.
+  `_get_mamba_bufs` rebuilds them through the existing lazy constructor.
+- V2: the Ascend Mamba model-state hook discards `_mamba_ctx` and deferred
+  copy contexts, restores accepted-count and align staging buffers in place.
+  `_ensure_align_ctx` reconstructs device addresses before copying states.
+  The runner invokes this before recapture, including a distinct draft model
+  state if present; a shared target/draft model state is reset only once.
+- Only snapshot restore invokes these actions. No cold-start allocation,
+  inference algorithm, quantization choice or fallback is changed.
+
+### Inspected operand ownership
+
+| Path | Producer / owner | Restore or first-use handling |
+| --- | --- | --- |
+| W8A8 static linear | `w8a8_static.process_weights_after_loading` | Parameters and persisted reciprocal/offset restored by checkpoint |
+| W8A8 dynamic linear | `w8a8_dynamic.process_weights_after_loading` | Weight/scales and persisted FP32 scale restored by checkpoint; activation scale computed per call |
+| GDN convolution | `AscendGatedDeltaNet` packed weight | Packed weight is a Parameter, already checkpoint-owned |
+| GDN recurrent state | KV cache and GDN prefill metadata | Fresh prefill derives `has_initial_state` from context length; convolution/SSM initialization follows it |
+| GDN graph metadata | `AscendGDNAttentionMetadataBuilder` | Build/padding paths write consumed slices, sequence masks, lengths and dummy accepted counts before use |
+| Mamba align copy metadata | V1 MambaBuffers / V2 model state | Newly invalidated lazy contexts, rebuilt before state-copy kernels |
+| Vision input normalization | `FusedInputNorm` | Persistent weight/bias buffers restored with model |
+| Vision positional IDs | Qwen vision CPU LRU cache | CPU indices transferred on each call, not a retained NPU allocation |
+| RoPE lookup tables | rotary modules and global aliases | Existing checkpoint persistence and post-restore reload |
+| M-RoPE input positions | V1 runner / V2 RopeState | Reset independent position buffers before dummy forward; V2 also clears staged writes and refreshes the prefill delta |
+| Dummy embeddings/token IDs | runner/model state and V1 proposer | Restore constructor zero values in place before capture; do not rely on a real request overwriting them |
+| Target and MTP models | separate checkpoint lifecycle | Both checkpoints restored before runner reset and graph recapture |
+| Encoder cache | runner | Existing `reset_encoder_cache` removes prior request features |
+
+### Follow-up: shared capture inputs and Qwen3.5 MTP
+
+The initial Mamba-only reset was insufficient. `DefaultModelState` also owns
+M-RoPE positions. `prepare_dummy_inputs` reads them directly during graph
+capture, overriding the runner's ordinary positions. Resetting model RoPE
+lookup tables or runner input buffers does not reset this distinct allocation.
+The common V2 reset now handles these buffers before the Mamba-specific hook,
+including multimodal/prompt-embedding dummy inputs. Prompt-embedding pointer
+tables and retained request tensors are cleared at the idle restore boundary.
+The potentially large prefill-position table is not cleared: new requests write
+their consumed rows; only pending writes, delta and capture positions are reset.
+
+The Qwen3.5 MTP model explicitly constructs `full_attention` decoder layers,
+not GDN layers. Its embeddings, FC, norms, decoder and LM head follow the
+existing draft checkpoint and quantization persistence paths. V1
+`AscendSpecDecodeBaseProposer.dummy_run` reads input IDs, hidden states and
+positions before real-request setup; its restore hook previously restored
+only `arange`. It now restores the graph inputs too, with separate M-RoPE and
+ordinary RoPE branches. V1 target dummy IDs/embeddings and M-RoPE buffers are
+also reset. V2 autoregressive MTP already has input/hidden/draft-step resets;
+the shared target/draft model state now receives the common reset as well.
+These are restore-only changes; the model forward and normal input preparation
+are unchanged. Tests cover repeated reset and preservation of buffer addresses,
+but do not substitute for NPU graph capture or MTP acceptance-rate validation.
+
+This is source-level and CPU-contract coverage, not NPU acceptance. Validate
+fresh snapshot creation, restore/recapture, text and image requests, repeated
+prefixes crossing Mamba block boundaries, changed batch sizes and MTP acceptance
+on the actual A2/A3 image. No claim is made that every quantized export or
+uninspected backend variant is fully supported.

@@ -29,13 +29,122 @@ ROOT = Path(__file__).resolve().parents[3] / "vllm_ascend"
 HOOK = "reset_runtime_state_after_snapshot_restore"
 
 
-@pytest.mark.parametrize("use_dcp", [False, True])
-def test_v1_input_restore_without_removed_storekvblock_buffers(use_dcp):
+@pytest.mark.parametrize("initialized", [False, True])
+def test_v1_mamba_restore_discards_lazy_device_tables(initialized):
     ns = {}
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v1_mamba_runtime_state"], ns)
+    old_context = SimpleNamespace(is_initialized=True, state_base_addrs=torch.full((2,), 123))
+    runner = SimpleNamespace(
+        mamba_state_idx={"finished-request": 3},
+        _mamba_bufs=SimpleNamespace(postprocess_align=old_context) if initialized else None,
+        _mamba_copy_bufs=object() if initialized else None,
+    )
+    indices = runner.mamba_state_idx
+    for _ in range(2):
+        ns["_reset_v1_mamba_runtime_state"](runner)
+        assert runner.mamba_state_idx is indices
+        assert not indices
+        assert runner._mamba_bufs is None
+        assert runner._mamba_copy_bufs is None
+
+
+@pytest.mark.parametrize("align", [False, True])
+def test_v2_mamba_restore_preserves_buffers_and_invalidates_context(align):
+    ns = {"torch": torch, "Base": object}
+    load_nodes(
+        "worker/v2/model_states/mamba_hybrid.py",
+        ["AscendMambaHybridModelState"],
+        ns,
+        methods=[HOOK],
+    )
+    state = ns["AscendMambaHybridModelState"]()
+    state._align_mode = align
+    # Use inference tensors to exercise the restore hook's inference-mode boundary.
+    with torch.inference_mode():
+        state.num_accepted_tokens_gpu = torch.full((4,), 99)
+        if align:
+            state._mamba_state_idx_gpu = torch.full((4,), 99)
+            state._mamba_src_col_gpu = torch.full((4,), 99)
+            state._mamba_src_off_gpu = torch.full((4,), 99)
+            state._mamba_ctx = SimpleNamespace(is_initialized=True)
+    state._layerwise_mamba_copy = object()
+    state._pending_bulk_copy = object()
+    buffers = [(state.num_accepted_tokens_gpu, 1)]
+    if align:
+        buffers.extend(
+            [
+                (state._mamba_state_idx_gpu, 0),
+                (state._mamba_src_col_gpu, -1),
+                (state._mamba_src_off_gpu, 0),
+            ]
+        )
+    pointers = [tensor.data_ptr() for tensor, _ in buffers]
+    for _ in range(2):
+        getattr(state, HOOK)()
+        assert all(torch.all(tensor == value) for tensor, value in buffers)
+        assert [tensor.data_ptr() for tensor, _ in buffers] == pointers
+        assert state._layerwise_mamba_copy is None
+        assert state._pending_bulk_copy is None
+        if align:
+            assert state._mamba_ctx is None
+        else:
+            assert not hasattr(state, "_mamba_ctx")
+
+
+def test_v2_mamba_restore_dispatch_is_type_scoped(monkeypatch):
+    module_name = "vllm_ascend.worker.v2.model_states.mamba_hybrid"
+    module = ModuleType(module_name)
+
+    class MambaState:
+        reset_runtime_state_after_snapshot_restore = Mock()
+
+    module.AscendMambaHybridModelState = MambaState
+    monkeypatch.setitem(sys.modules, module_name, module)
+    default_module = ModuleType("vllm.v1.worker.gpu.model_states.default")
+    default_module.DefaultModelState = type("DefaultModelState", (), {})
+    monkeypatch.setitem(sys.modules, default_module.__name__, default_module)
+    ns = {"torch": torch}
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v2_model_state"], ns)
+    ns["_reset_v2_model_state"](SimpleNamespace())
+    MambaState.reset_runtime_state_after_snapshot_restore.assert_not_called()
+    ns["_reset_v2_model_state"](MambaState())
+    MambaState.reset_runtime_state_after_snapshot_restore.assert_called_once()
+
+
+def test_v1_restore_invokes_mamba_invalidation():
+    ns = {
+        name: lambda runner: None
+        for name in (
+            "_reset_v1_spec_decode_runtime_state",
+            "_restore_v1_drafter_runtime_state",
+            "_reset_v1_attention_builders",
+            "_rebuild_v1_native_resources",
+            "_reset_v1_input_runtime_state",
+            "_reset_v1_block_tables",
+        )
+    }
+    load_nodes(
+        "snapshot/model_runner_lifecycle/restore.py",
+        ["_reset_v1_runner_runtime_state", "_reset_v1_mamba_runtime_state"],
+        ns,
+    )
+    runner = SimpleNamespace(mamba_state_idx={"old": 1}, _mamba_bufs=object(), _mamba_copy_bufs=object())
+    ns["_reset_v1_runner_runtime_state"](runner)
+    assert runner._mamba_bufs is None
+    assert runner._mamba_copy_bufs is None
+    assert not runner.mamba_state_idx
+
+
+@pytest.mark.parametrize("use_dcp", [False, True])
+@pytest.mark.parametrize("uses_mrope", [False, True])
+def test_v1_input_restore_without_removed_storekvblock_buffers(use_dcp, uses_mrope):
+    ns = {"torch": torch}
     load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v1_input_runtime_state"], ns)
     # Release v0.30.0 removed group_len/group_key_idx/group_key_cache_idx.
     # Use a strict object, not MagicMock attributes masking missing fields.
     runner = SimpleNamespace(
+        input_ids=SimpleNamespace(cpu=torch.full((8,), 7), gpu=torch.full((8,), 7)),
+        inputs_embeds=SimpleNamespace(cpu=torch.full((8, 4), float("nan")), gpu=torch.full((8, 4), float("nan"))),
         positions=torch.full((8,), 7),
         _positions_cpu_buf=torch.full((8,), 7),
         input_batch=SimpleNamespace(
@@ -43,20 +152,108 @@ def test_v1_input_restore_without_removed_storekvblock_buffers(use_dcp):
             num_prompt_tokens_cpu_tensor=torch.full((4,), 7),
         ),
         use_dcp=use_dcp,
+        uses_mrope=uses_mrope,
         dcp_manager=SimpleNamespace(reset_runtime_state_after_snapshot_restore=Mock()),
     )
     tensors = (
+        runner.input_ids.cpu,
+        runner.input_ids.gpu,
+        runner.inputs_embeds.cpu,
+        runner.inputs_embeds.gpu,
         runner.positions,
         runner._positions_cpu_buf,
         runner.input_batch.num_computed_tokens_cpu_tensor,
         runner.input_batch.num_prompt_tokens_cpu_tensor,
     )
+    if uses_mrope:
+        runner.mrope_positions = SimpleNamespace(cpu=torch.full((3, 9), 7), gpu=torch.full((3, 9), 7))
+        tensors += (runner.mrope_positions.cpu, runner.mrope_positions.gpu)
     pointers = [tensor.data_ptr() for tensor in tensors]
     for _ in range(2):
         ns["_reset_v1_input_runtime_state"](runner)
         assert all(torch.count_nonzero(tensor) == 0 for tensor in tensors)
         assert [tensor.data_ptr() for tensor in tensors] == pointers
     assert runner.dcp_manager.reset_runtime_state_after_snapshot_restore.call_count == (2 if use_dcp else 0)
+
+
+@pytest.mark.parametrize("multimodal,prompt_embeds", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("mrope", [False, True])
+def test_v2_common_model_state_restore(monkeypatch, multimodal, prompt_embeds, mrope):
+    class DefaultState(SimpleNamespace):
+        pass
+
+    default_module = ModuleType("vllm.v1.worker.gpu.model_states.default")
+    default_module.DefaultModelState = DefaultState
+    mamba_module = ModuleType("vllm_ascend.worker.v2.model_states.mamba_hybrid")
+    mamba_module.AscendMambaHybridModelState = type("MambaState", (), {})
+    for module in (default_module, mamba_module):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    ns = {"torch": torch}
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v2_model_state"], ns)
+
+    def uva():
+        buffer = SimpleNamespace(cpu=torch.full((4,), 9), gpu=torch.full((4,), 9))
+        buffer.copy_to_uva = lambda: buffer.gpu.copy_(buffer.cpu)
+        return buffer
+
+    state = DefaultState(rope_state=None, supports_mm_inputs=multimodal, prompt_embeds_state=None)
+    tensors = []
+    if mrope:
+        state.rope_state = SimpleNamespace(
+            positions=torch.full((3, 9), 1000000),
+            prefill_positions=SimpleNamespace(clear_staged_writes=Mock()),
+            prefill_delta=uva(),
+        )
+        tensors.extend(
+            [state.rope_state.positions, state.rope_state.prefill_delta.cpu, state.rope_state.prefill_delta.gpu]
+        )
+    if prompt_embeds:
+        state.prompt_embeds_state = SimpleNamespace(
+            gpu_tensors={"old": torch.ones(1)}, embeds_ptrs=uva(), mask_ptrs=uva(), embeds_lens=uva()
+        )
+        for name in ("embeds_ptrs", "mask_ptrs", "embeds_lens"):
+            buffer = getattr(state.prompt_embeds_state, name)
+            tensors.extend([buffer.cpu, buffer.gpu])
+    if multimodal:
+        state.encoder_runner = SimpleNamespace(inputs_embeds=torch.full((8, 4), float("nan")))
+        tensors.append(state.encoder_runner.inputs_embeds)
+    elif prompt_embeds:
+        state.inputs_embeds = torch.full((8, 4), float("nan"))
+        tensors.append(state.inputs_embeds)
+    pointers = [tensor.data_ptr() for tensor in tensors]
+    for _ in range(2):
+        ns["_reset_v2_model_state"](state)
+        assert all(torch.count_nonzero(tensor) == 0 for tensor in tensors)
+        assert [tensor.data_ptr() for tensor in tensors] == pointers
+        if prompt_embeds:
+            assert not state.prompt_embeds_state.gpu_tensors
+    if mrope:
+        assert state.rope_state.prefill_positions.clear_staged_writes.call_count == 2
+
+
+@pytest.mark.parametrize("uses_mrope", [False, True])
+def test_v1_drafter_restores_graph_inputs(uses_mrope):
+    ns = {"torch": torch, "Base": object}
+    load_nodes(
+        "spec_decode/llm_base_proposer.py", ["AscendSpecDecodeBaseProposer"], ns, methods=["restore_runtime_buffers"]
+    )
+    proposer = ns["AscendSpecDecodeBaseProposer"]()
+    proposer.uses_mrope = uses_mrope
+    proposer.token_arange_np = np.arange(9, dtype=np.int32)
+    with torch.inference_mode():
+        proposer.arange = torch.full((9,), -1, dtype=torch.int32)
+        proposer.input_ids = torch.full((8,), 1000000)
+        proposer.hidden_states = torch.full((8, 4), float("nan"))
+        proposer.inputs_embeds = torch.full((8, 4), float("nan"))
+        positions = torch.full((3, 9) if uses_mrope else (8,), 1000000)
+    setattr(proposer, "mrope_positions" if uses_mrope else "positions", positions)
+    tensors = [proposer.input_ids, proposer.hidden_states, proposer.inputs_embeds, positions]
+    pointers = [tensor.data_ptr() for tensor in tensors]
+    for _ in range(2):
+        proposer.restore_runtime_buffers()
+        assert torch.equal(proposer.arange, torch.arange(9, dtype=torch.int32))
+        assert all(torch.count_nonzero(tensor) == 0 for tensor in tensors)
+        assert [tensor.data_ptr() for tensor in tensors] == pointers
 
 
 @pytest.mark.parametrize("v2", [False, True])

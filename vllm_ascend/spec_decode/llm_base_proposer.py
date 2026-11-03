@@ -311,9 +311,17 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         self.draft_window_size = None
         self.sliding_window = None
 
+    @torch.inference_mode()
     def restore_runtime_buffers(self) -> None:
-        """Restore immutable device lookup buffers after snapshot resume."""
+        """Restore lookup and dummy-run inputs before graph recapture."""
         self.arange.copy_(torch.from_numpy(self.token_arange_np[: self.arange.shape[0]]))
+        self.input_ids.zero_()
+        self.hidden_states.zero_()
+        self.inputs_embeds.zero_()
+        if self.uses_mrope:
+            self.mrope_positions.zero_()
+        else:
+            self.positions.zero_()
 
     def _raise_if_padded_drafter_batch_disabled_and_full_graph_enabled(self):
         if (

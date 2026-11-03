@@ -218,6 +218,7 @@ def _reset_v2_runner_runtime_state(runner) -> None:
     runner.num_computed_tokens_cpu.zero_()
     _reset_block_tables(runner.block_tables)
     runner.reset_encoder_cache()
+    _reset_v2_model_state(runner.model_state)
     runner.draft_tokens_handler.req_ids = []
     runner.draft_tokens_handler.draft_tokens_np = None
     runner.draft_tokens_handler.num_draft_tokens = 0
@@ -241,6 +242,8 @@ def _reset_v2_runner_runtime_state(runner) -> None:
     groups = list(runner.attn_groups)
     if isinstance(runner.speculator, DraftModelSpeculator):
         _reset_speculator(runner.speculator)
+        if runner.speculator.model_state is not runner.model_state:
+            _reset_v2_model_state(runner.speculator.model_state)
         groups.extend(runner.speculator.attn_groups)
     _reset_metadata_builders(
         [builder for kv_groups in groups for group in kv_groups for builder in group.metadata_builders]
@@ -256,6 +259,43 @@ def _reset_v2_runner_runtime_state(runner) -> None:
         runner.model_state.kvpp_runtime = runner.kvpp
 
 
+@torch.inference_mode()
+def _reset_v2_model_state(model_state) -> None:
+    from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+
+    from vllm_ascend.worker.v2.model_states.mamba_hybrid import AscendMambaHybridModelState
+
+    if isinstance(model_state, DefaultModelState):
+        # Capture reads these buffers without running per-request preparation.
+        # They are separate from runner.input_buffers and model RoPE caches.
+        if model_state.rope_state is not None:
+            rope = model_state.rope_state
+            rope.positions.zero_()
+            rope.prefill_positions.clear_staged_writes()
+            rope.prefill_delta.cpu.zero_()
+            rope.prefill_delta.copy_to_uva()
+        if model_state.supports_mm_inputs:
+            model_state.encoder_runner.inputs_embeds.zero_()
+        elif model_state.prompt_embeds_state is not None:
+            model_state.inputs_embeds.zero_()
+        if model_state.prompt_embeds_state is not None:
+            prompt = model_state.prompt_embeds_state
+            prompt.gpu_tensors.clear()
+            for buffer in (prompt.embeds_ptrs, prompt.mask_ptrs, prompt.embeds_lens):
+                buffer.cpu.zero_()
+                buffer.copy_to_uva()
+    if isinstance(model_state, AscendMambaHybridModelState):
+        model_state.reset_runtime_state_after_snapshot_restore()
+
+
+def _reset_v1_mamba_runtime_state(runner) -> None:
+    # Align helpers cache device pointer/stride tables behind is_initialized.
+    # Drop them before graph recapture; the normal lazy path rebuilds all tables.
+    runner.mamba_state_idx.clear()
+    runner._mamba_bufs = None
+    runner._mamba_copy_bufs = None
+
+
 def _reset_v1_runner_runtime_state(runner) -> None:
     _reset_v1_spec_decode_runtime_state(runner)
     _restore_v1_drafter_runtime_state(runner)
@@ -263,6 +303,7 @@ def _reset_v1_runner_runtime_state(runner) -> None:
     _rebuild_v1_native_resources(runner)
     _reset_v1_input_runtime_state(runner)
     _reset_v1_block_tables(runner)
+    _reset_v1_mamba_runtime_state(runner)
 
 
 def _reset_v1_spec_decode_runtime_state(runner) -> None:
@@ -318,9 +359,17 @@ def _rebuild_v1_native_resources(runner) -> None:
         )
 
 
+@torch.inference_mode()
 def _reset_v1_input_runtime_state(runner) -> None:
+    # Dummy forward consumes these before a real request populates them.
+    for buffer in (runner.input_ids, runner.inputs_embeds):
+        buffer.cpu.zero_()
+        buffer.gpu.zero_()
     runner.positions.zero_()
     runner._positions_cpu_buf.zero_()
+    if runner.uses_mrope:
+        runner.mrope_positions.cpu.zero_()
+        runner.mrope_positions.gpu.zero_()
     runner.input_batch.num_computed_tokens_cpu_tensor.zero_()
     runner.input_batch.num_prompt_tokens_cpu_tensor.zero_()
     if runner.use_dcp:

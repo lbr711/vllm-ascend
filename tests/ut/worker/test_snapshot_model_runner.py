@@ -198,6 +198,9 @@ def test_reset_v1_spec_decode_runtime_state():
 def test_reset_v1_input_runtime_state():
     runner = SimpleNamespace(
         use_dcp=True,
+        uses_mrope=False,
+        input_ids=SimpleNamespace(cpu=torch.ones(4), gpu=torch.ones(4)),
+        inputs_embeds=SimpleNamespace(cpu=torch.ones(4, 2), gpu=torch.ones(4, 2)),
         dcp_manager=MagicMock(),
         positions=torch.ones(4),
         _positions_cpu_buf=torch.ones(4),
