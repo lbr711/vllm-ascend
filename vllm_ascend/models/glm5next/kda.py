@@ -276,6 +276,19 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
     def get_attn_backend(self):
         return AscendGDNHostMetadataBackend
 
+    def _build_merged_conv_weight(self, dtype: torch.dtype) -> torch.Tensor:
+        weights = [
+            m.weight.view(m.weight.size(0), m.weight.size(2)) for m in (self.q_conv1d, self.k_conv1d, self.v_conv1d)
+        ]
+        return torch.cat(weights, dim=0).transpose(0, 1).to(dtype=dtype).contiguous()
+
+    @torch.inference_mode()
+    def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
+        # This lazy copy is not in state_dict. Source Parameters have already
+        # been restored; preserve the cached storage before graph recapture.
+        if self._merged_conv_weight is not None:
+            self._merged_conv_weight.copy_(self._build_merged_conv_weight(self._merged_conv_weight.dtype))
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -417,19 +430,7 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         # built once and cached (params are fixed after load). conv_state is
         # already stored as the merged q|k|v state, so it is used directly.
         if self._merged_conv_weight is None:
-
-            def _w(m):
-                return m.weight.view(m.weight.size(0), m.weight.size(2))
-
-            self._merged_conv_weight = (
-                torch.cat(
-                    [_w(self.q_conv1d), _w(self.k_conv1d), _w(self.v_conv1d)],
-                    dim=0,
-                )
-                .transpose(0, 1)
-                .to(dtype=qkv_proj_states.dtype)
-                .contiguous()
-            )
+            self._merged_conv_weight = self._build_merged_conv_weight(qkv_proj_states.dtype)
         conv_weights = self._merged_conv_weight
 
         # Split projections / gating into spec (draft-verify) and non-spec token

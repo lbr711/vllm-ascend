@@ -30,6 +30,49 @@ HOOK = "reset_runtime_state_after_snapshot_restore"
 
 
 @pytest.mark.parametrize("initialized", [False, True])
+def test_glm5next_merged_conv_snapshot_restore(initialized):
+    rebuild = "rebuild_derived_tensors_after_snapshot_restore"
+    ns = {"torch": torch, "Base": torch.nn.Module}
+    load_nodes(
+        "models/glm5next/kda.py",
+        ["Glm5NextLinearAttention"],
+        ns,
+        methods=["_build_merged_conv_weight", rebuild],
+    )
+    layer = ns["Glm5NextLinearAttention"]()
+    for index, name in enumerate(("q_conv1d", "k_conv1d", "v_conv1d")):
+        module = torch.nn.Module()
+        module.weight = torch.nn.Parameter(torch.arange(8).reshape(2, 1, 4).float() + 10 * index)
+        setattr(layer, name, module)
+    expected = (
+        torch.cat([layer.q_conv1d.weight[:, 0], layer.k_conv1d.weight[:, 0], layer.v_conv1d.weight[:, 0]])
+        .T.to(torch.bfloat16)
+        .contiguous()
+    )
+    with torch.inference_mode():
+        layer._merged_conv_weight = layer._build_merged_conv_weight(torch.bfloat16) if initialized else None
+        if initialized:
+            torch.testing.assert_close(layer._merged_conv_weight, expected)
+            layer._merged_conv_weight.zero_()
+    pointer = layer._merged_conv_weight.data_ptr() if initialized else None
+    # Exercise the actual central dispatcher, including module traversal.
+    dispatch = {"nn": torch.nn, "torch": torch, "Iterable": Iterable, "Iterator": Iterator}
+    load_nodes(
+        "snapshot/model_runner_lifecycle/module_lifecycle.py",
+        ["_iter_modules_and_impls", "rebuild_model_derived_tensors_after_snapshot_restore"],
+        dispatch,
+    )
+    for _ in range(2):
+        dispatch["rebuild_model_derived_tensors_after_snapshot_restore"](layer, torch.bfloat16, "target")
+        if initialized:
+            torch.testing.assert_close(layer._merged_conv_weight, expected)
+            assert layer._merged_conv_weight.data_ptr() == pointer
+        else:
+            assert layer._merged_conv_weight is None
+    assert "_merged_conv_weight" not in layer.state_dict()
+
+
+@pytest.mark.parametrize("initialized", [False, True])
 def test_v1_mamba_restore_discards_lazy_device_tables(initialized):
     ns = {}
     load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v1_mamba_runtime_state"], ns)
