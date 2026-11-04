@@ -682,7 +682,6 @@ class KVPoolWorker:
 
     def rebuild_kv_transfer_endpoint(self, local_ip: str, new_engine_id: str | None = None) -> None:
         self.m_store.reset_after_snapshot(local_ip)
-        self._allocated_gvas.clear()
 
     def _build_group_layer_builders(self) -> list[LayerBatchBuilder]:
         builders = []
