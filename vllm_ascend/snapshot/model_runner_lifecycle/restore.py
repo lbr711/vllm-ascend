@@ -191,7 +191,9 @@ def _reset_speculator(speculator) -> None:
             speculator._draft_scatter_buf.fill_(float("-inf"))
 
 
+@torch.inference_mode()
 def _reset_metadata_builders(builders) -> None:
+    # Builders can retain inference tensors allocated during warmup/capture.
     builders_and_masks = builders + [
         builder.attn_mask_builder for builder in builders if hasattr(builder, "attn_mask_builder")
     ]
@@ -205,6 +207,7 @@ def _reset_metadata_builders(builders) -> None:
             reset_state()
 
 
+@torch.inference_mode()
 def _reset_v2_runner_runtime_state(runner) -> None:
     from vllm.v1.worker.gpu import pcp_manager
     from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
@@ -376,6 +379,7 @@ def _reset_v1_input_runtime_state(runner) -> None:
         runner.dcp_manager.reset_runtime_state_after_snapshot_restore()
 
 
+@torch.inference_mode()
 def _reset_v1_block_tables(runner) -> None:
     block_tables = runner.input_batch.block_table
     block_tables.reset_runtime_state_after_snapshot_restore()

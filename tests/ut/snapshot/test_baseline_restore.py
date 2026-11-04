@@ -29,6 +29,98 @@ ROOT = Path(__file__).resolve().parents[3] / "vllm_ascend"
 HOOK = "reset_runtime_state_after_snapshot_restore"
 
 
+@pytest.mark.parametrize("use_smla", [False, True])
+def test_metadata_restore_accepts_inference_tensors(use_smla):
+    ns = {"torch": torch, "Base": object, "SMLA_DEFAULT_SINK_VALUE": -1.0}
+    load_nodes("attention/sfa_v1.py", ["AscendSFAMetadataBuilder"], ns, methods=[HOOK])
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_metadata_builders"], ns)
+    builder = ns["AscendSFAMetadataBuilder"]()
+    with torch.inference_mode():
+        tensors = [torch.ones(4) for _ in range(4)]
+    state = SimpleNamespace(use_smla=use_smla, block_table_buffer=tensors[0])
+    if use_smla:
+        state.metadata_buffer, state.length_buffer, state.sinks = tensors[1:]
+    builder.nope_states = {None: state}
+    calls = []
+    builder.attn_mask_builder = SimpleNamespace(
+        reset_runtime_state_after_snapshot_restore=lambda: calls.append(torch.is_inference_mode_enabled())
+    )
+    pointers = [t.data_ptr() for t in tensors]
+    with torch.inference_mode(False):
+        for _ in range(2):
+            ns["_reset_metadata_builders"]([builder, builder])
+            assert not torch.is_inference_mode_enabled()
+    assert calls == [True, True]  # Shared builder/mask is dispatched only once.
+    assert not tensors[0].any()
+    if use_smla:
+        assert not tensors[1].any() and not tensors[2].any()
+        assert torch.all(tensors[3] == -1)
+    assert pointers == [t.data_ptr() for t in tensors]
+
+
+def test_v1_block_table_restore_accepts_inference_tensors():
+    ns = {"torch": torch, "Base": object, "PAD_SLOT_ID": -1, "logger": Mock()}
+    load_nodes("worker/block_table.py", ["MultiGroupBlockTable"], ns, methods=[HOOK])
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_v1_block_tables"], ns)
+    tables = ns["MultiGroupBlockTable"]()
+    with torch.inference_mode():
+        tensors = [torch.ones(4, dtype=torch.int32) for _ in range(4)]
+    table = SimpleNamespace(
+        block_table=SimpleNamespace(cpu=tensors[0], gpu=tensors[1]),
+        slot_mapping=SimpleNamespace(cpu=tensors[2], gpu=tensors[3]),
+        num_blocks_per_row=np.ones(4),
+        is_mamba_group=True,
+    )
+    tables.block_tables = [table]
+    tables._can_fuse_slot_mapping = False
+    runner = SimpleNamespace(input_batch=SimpleNamespace(block_table=tables))
+    pointers = [t.data_ptr() for t in tensors]
+    with torch.inference_mode(False):
+        for _ in range(2):
+            ns["_reset_v1_block_tables"](runner)
+    assert not tensors[0].any() and not tensors[1].any()
+    assert torch.all(tensors[2] == -1) and torch.all(tensors[3] == -1)
+    assert pointers == [t.data_ptr() for t in tensors]
+
+
+def test_all2all_expert_ids_restore_accepts_inference_tensor():
+    ns = {"torch": torch, "Base": object}
+    load_nodes("ops/fused_moe/token_dispatcher.py", ["TokenDispatcherWithAll2AllV"], ns, methods=[HOOK])
+    dispatcher = ns["TokenDispatcherWithAll2AllV"]()
+    dispatcher.num_local_experts = 2
+    dispatcher._build_expert_ids_per_ep_rank = lambda: torch.tensor([0, 1, 0, 1])
+    with torch.inference_mode():
+        dispatcher.expert_ids_per_ep_rank = torch.full((4,), -1)
+    pointer = dispatcher.expert_ids_per_ep_rank.data_ptr()
+    with torch.inference_mode(False):
+        for _ in range(2):
+            dispatcher.reset_runtime_state_after_snapshot_restore()
+    assert dispatcher.expert_ids_per_ep_rank.tolist() == [0, 1, 0, 1]
+    assert dispatcher.expert_ids_per_ep_rank.data_ptr() == pointer
+
+
+def test_dflash_restore_keeps_inference_mode_after_super():
+    class Base:
+        @torch.inference_mode()
+        def restore_runtime_buffers(self):
+            self.input_ids.zero_()
+
+    ns = {"torch": torch, "Base": Base}
+    load_nodes("spec_decode/dflash_proposer.py", ["AscendDflashProposer"], ns, methods=["restore_runtime_buffers"])
+    proposer = ns["AscendDflashProposer"]()
+    with torch.inference_mode():
+        proposer.input_ids = torch.ones(4, dtype=torch.int32)
+        proposer.arange_dflash = torch.full((4,), -1, dtype=torch.int32)
+    pointer = proposer.arange_dflash.data_ptr()
+    with torch.inference_mode(False):
+        for _ in range(2):
+            proposer.restore_runtime_buffers()
+            assert not torch.is_inference_mode_enabled()
+    assert proposer.arange_dflash.tolist() == [0, 1, 2, 3]
+    assert proposer.arange_dflash.data_ptr() == pointer
+    assert not proposer.input_ids.any()
+
+
 @pytest.mark.parametrize("initialized", [False, True])
 def test_glm5next_merged_conv_snapshot_restore(initialized):
     rebuild = "rebuild_derived_tensors_after_snapshot_restore"

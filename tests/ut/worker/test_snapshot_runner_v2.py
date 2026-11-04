@@ -214,13 +214,23 @@ def test_v2_restore_uses_current_pcp_factory_contract():
     runner.attn_groups = []
     runner.speculator = None
     runner.kvpp.scheduler = None
+    with torch.inference_mode():
+        runner.input_buffers.seq_lens_cpu = torch.ones(4)
+        runner.num_computed_tokens_cpu = torch.ones(4)
+        runner.input_buffers.positions = torch.ones(4)
+    positions = runner.input_buffers.positions
+    pointer = positions.data_ptr()
     with (
         patch.object(restore, "_reset_request_state"),
-        patch.object(restore, "_reset_input_buffers"),
+        patch.object(restore, "_reset_input_buffers", side_effect=lambda buffers: buffers.positions.zero_()),
         patch.object(restore, "_reset_block_tables"),
         patch("vllm.v1.worker.gpu.pcp_manager.maybe_build_pcp_manager", autospec=True) as factory,
     ):
         restore._reset_v2_runner_runtime_state(runner)
+
+    assert not positions.any() and positions.data_ptr() == pointer
+    assert not runner.input_buffers.seq_lens_cpu.any()
+    assert not runner.num_computed_tokens_cpu.any()
 
     factory.assert_called_once_with(
         runner.vllm_config,

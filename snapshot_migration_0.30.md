@@ -500,6 +500,29 @@ uninspected backend variant is fully supported.
 
 ## GLM-5.3-Flash A2 PD follow-up
 
+### Inference-mode restore boundary follow-up
+
+The A2 restore log `vllm-d0-0-55bdfb7ddb-hvdtc_node-37-210_0.txt`
+first fails in SFA metadata reset (`block_table_buffer.zero_`), before graph
+recapture. The subsequent ACL status 507909 occurs during resume retries.
+Module hooks had an inference-mode dispatcher, but metadata builders use a
+separate dispatcher which lacked it. CPU tests previously used ordinary tensors
+and did not exercise this constraint.
+
+Restore-only inference-mode boundaries now cover metadata builders/masks,
+V1 block tables and V2 runner resets (including request/input/speculator state).
+The adjacent All2AllV expert-ID reset and DFlash proposer override also require
+protection: a decorated parent method does not protect the subclass code after
+`super()` returns. These are additional same-class risks, not additional failures
+observed in this GLM log. Existing module, Mamba, PP, input-buffer and MoE-padding
+guards are retained. RoPE rebinding and Python-cache invalidation do not mutate
+old tensor contents. Checkpoint copies use the existing `.data` path; no copy
+strategy or checkpoint format is changed.
+
+Regression tests construct inference tensors and call reset outside inference
+mode, including the production SFA/block-table hooks, shared-builder deduplication,
+repeat reset and storage identity. This does not replace NPU restore acceptance.
+
 Reviewed against local snapshot HEAD `8089520f9` and the GLM-5.3-Flash
 tutorial's A2 PD example: V1 runner, P DP2/TP8 with FlashComm1/DSA CP,
 D DP8/TP2, W8A8, INT8 KV and indexer caches, MooncakeConnectorV2,
