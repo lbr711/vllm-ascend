@@ -97,6 +97,7 @@ class AscendDflashProposer(AscendEagleProposer):
                 device=device,
             )
 
+    @torch.inference_mode()
     def restore_runtime_buffers(self) -> None:
         super().restore_runtime_buffers()
         self.arange_dflash.copy_(

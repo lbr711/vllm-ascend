@@ -481,6 +481,7 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher[MoEAllToAllCombineMetadata]
             device=torch.npu.current_device(),
         )
 
+    @torch.inference_mode()
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         if self.num_local_experts > 1:
             self.expert_ids_per_ep_rank.copy_(self._build_expert_ids_per_ep_rank())
