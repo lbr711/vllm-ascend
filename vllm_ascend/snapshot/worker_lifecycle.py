@@ -58,8 +58,33 @@ def _run_timed_steps(worker, operation: str, steps) -> None:
         operation,
         worker.rank,
     )
-    for _, step_fn in steps:
-        step_fn()
+    # Host wall time only: do not add device synchronization for diagnostics.
+    for step_name, step_fn in steps:
+        logger.info(
+            "[snapshot][worker] step started: operation=%s rank=%s step=%s",
+            operation,
+            worker.rank,
+            step_name,
+        )
+        step_start = time.perf_counter()
+        try:
+            step_fn()
+        except Exception:
+            logger.error(
+                "[snapshot][worker] step failed: operation=%s rank=%s step=%s duration=%.4f s",
+                operation,
+                worker.rank,
+                step_name,
+                time.perf_counter() - step_start,
+            )
+            raise
+        logger.info(
+            "[snapshot][worker] step completed: operation=%s rank=%s step=%s duration=%.4f s",
+            operation,
+            worker.rank,
+            step_name,
+            time.perf_counter() - step_start,
+        )
     logger.info(
         "[snapshot][worker] %s completed: rank=%s duration=%.2f s",
         operation,
