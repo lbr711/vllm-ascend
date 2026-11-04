@@ -455,6 +455,31 @@ def test_snapshot_step_timing_preserves_exception():
     assert logger.info.call_count == 2
 
 
+def test_pool_restore_does_not_require_removed_gva_cache():
+    ns = {"Base": object}
+    load_nodes(
+        "distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py",
+        ["KVPoolWorker"],
+        ns,
+        {"prepare_for_snapshot_restore", "rebuild_kv_transfer_endpoint"},
+    )
+    worker = ns["KVPoolWorker"]()
+    worker.m_store = SimpleNamespace(prepare_for_snapshot_restore=Mock(), reset_after_snapshot=Mock())
+    assert not hasattr(worker, "_allocated_gvas")
+    for ip in ("10.0.0.1", "10.0.0.2"):
+        worker.prepare_for_snapshot_restore()
+        worker.rebuild_kv_transfer_endpoint(ip, "new-engine")
+        worker.m_store.reset_after_snapshot.assert_called_with(ip)
+    assert worker.m_store.prepare_for_snapshot_restore.call_count == 2
+    assert worker.m_store.reset_after_snapshot.call_count == 2
+    error = RuntimeError("backend restore failed")
+    worker.m_store.reset_after_snapshot.side_effect = error
+    with pytest.raises(RuntimeError) as caught:
+        worker.rebuild_kv_transfer_endpoint("10.0.0.3")
+    assert caught.value is error
+    assert not hasattr(worker, "_allocated_gvas")
+
+
 def load_nodes(path, names, namespace, methods=None):
     tree = ast.parse((ROOT / path).read_text())
     nodes = [node for node in tree.body if getattr(node, "name", None) in names]
