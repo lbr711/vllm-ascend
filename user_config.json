@@ -1,0 +1,96 @@
+{
+  "version": "v2.0",
+  "motor_deploy_config": {
+    "p_instances_num": 1,
+    "d_instances_num": 1,
+    "single_p_instance_pod_num": 1,
+    "single_d_instance_pod_num": 1,
+    "p_pod_npu_num": 8,
+    "d_pod_npu_num": 8,
+    "image_name": "REPLACE_WITH_MOTOR_VLLM_ASCEND_0_30_0_A2_IMAGE",
+    "job_id": "qwen36-27b-1p1d",
+    "hardware_type": "800I_A2",
+    "weight_mount_path": "/mnt/weight/Qwen3.5-9B"
+  },
+   "motor_container_snapshot_config": {
+        "enable_snapshot": true
+    },
+  "motor_controller_config": {},
+  "motor_coordinator_config": {},
+  "motor_engine_prefill_config": {
+    "engine_type": "vllm",
+    "motor_nodemanger_config": {},
+    "engine_config": {
+      "served_model_name": "qwen",
+      "model": "/mnt/weight/Qwen3.5-9B",
+      "dtype": "bfloat16",
+      "trust_remote_code": true,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 8,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "gpu_memory_utilization": 0.85,
+      "max_model_len": 32768,
+      "max_num_seqs": 32,
+      "enforce_eager": true,
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeConnectorV1",
+        "kv_buffer_device": "npu",
+        "kv_role": "kv_producer",
+        "kv_parallel_size": 1,
+        "kv_port": "55220",
+        "engine_id": "0",
+        "kv_rank": 0,
+        "kv_connector_extra_config": {
+          "prefill": {
+            "dp_size": 1,
+            "tp_size": 8
+          },
+          "decode": {
+            "dp_size": 1,
+            "tp_size": 8
+          }
+        }
+      }
+    }
+  },
+  "motor_engine_decode_config": {
+    "engine_type": "vllm",
+    "motor_nodemanger_config": {},
+    "engine_config": {
+      "served_model_name": "qwen",
+      "model": "/mnt/weight/Qwen3.5-9B",
+      "dtype": "bfloat16",
+      "trust_remote_code": true,
+      "data_parallel_size": 1,
+      "tensor_parallel_size": 8,
+      "pipeline_parallel_size": 1,
+      "data_parallel_rpc_port": 9000,
+      "gpu_memory_utilization": 0.85,
+      "max_model_len": 32768,
+      "max_num_seqs": 32,
+      "compilation_config": {
+        "cudagraph_mode": "FULL_DECODE_ONLY"
+      },
+      "kv_transfer_config": {
+        "kv_connector": "MooncakeConnectorV1",
+        "kv_buffer_device": "npu",
+        "kv_role": "kv_consumer",
+        "kv_parallel_size": 1,
+        "kv_port": "56010",
+        "engine_id": "1",
+        "kv_rank": 0,
+        "kv_connector_extra_config": {
+          "prefill": {
+            "dp_size": 1,
+            "tp_size": 8
+          },
+          "decode": {
+            "dp_size": 1,
+            "tp_size": 8
+          }
+        }
+      }
+    }
+  }
+}
