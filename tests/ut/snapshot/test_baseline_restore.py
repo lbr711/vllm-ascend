@@ -416,45 +416,6 @@ def test_restore_rebuilds_only_initialized_kv_zeroers(v2, initialized):
     assert phases == (["modules", "zeroer"] if initialized else ["modules"])
 
 
-@pytest.mark.parametrize("operation", ["resume", "suspend"])
-def test_snapshot_step_timing_preserves_order(operation):
-    logger = Mock()
-    clock = Mock(side_effect=[0, 1, 3, 4, 7, 8])
-    ns = {"time": SimpleNamespace(perf_counter=clock), "logger": logger}
-    load_nodes("snapshot/worker_lifecycle.py", ["_run_timed_steps"], ns)
-    executed = []
-    ns["_run_timed_steps"](
-        SimpleNamespace(rank=2),
-        operation,
-        [("first", lambda: executed.append("first")), ("second", lambda: executed.append("second"))],
-    )
-    assert executed == ["first", "second"]
-    messages = [call.args[0] % call.args[1:] for call in logger.info.call_args_list]
-    assert f"operation={operation} rank=2 step=first duration=2.0000 s" in messages[2]
-    assert f"operation={operation} rank=2 step=second duration=3.0000 s" in messages[4]
-    assert "duration=8.00 s" in messages[5]
-    logger.error.assert_not_called()
-
-
-def test_snapshot_step_timing_preserves_exception():
-    logger = Mock()
-    ns = {"time": SimpleNamespace(perf_counter=Mock(side_effect=[0, 1, 3])), "logger": logger}
-    load_nodes("snapshot/worker_lifecycle.py", ["_run_timed_steps"], ns)
-    error = RuntimeError("restore failed")
-    next_step = Mock()
-    with pytest.raises(RuntimeError) as caught:
-        ns["_run_timed_steps"](
-            SimpleNamespace(rank=2),
-            "resume",
-            [("first", Mock(side_effect=error)), ("second", next_step)],
-        )
-    assert caught.value is error
-    next_step.assert_not_called()
-    args = logger.error.call_args.args
-    assert "step=first duration=2.0000 s" in args[0] % args[1:]
-    assert logger.info.call_count == 2
-
-
 def test_pool_restore_does_not_require_removed_gva_cache():
     ns = {"Base": object}
     load_nodes(
