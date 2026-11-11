@@ -512,7 +512,7 @@ class AscendC8MXFPAttentionBackendImpl(AscendAttentionBackendImpl):
     # required for objects that predate the class swap.
     enable_hamming_sparse: bool = False
 
-    def restore_cache_after_snapshot_restore(self, layer) -> None:
+    def restore_kv_cache_after_snapshot_restore(self, layer) -> None:
         """Refill static V scales after parameter restore and cache allocation."""
         fill_mxfp_v_scale_cache(layer.v_cache_scale, layer.kv_cache[3])
 

@@ -1659,7 +1659,7 @@ def test_module_dispatch_refills_mxfp_scale_cache_once(monkeypatch):
         "attention/attention_c8_mxfp.py",
         ["AscendC8MXFPAttentionBackendImpl"],
         impl_ns,
-        {"restore_cache_after_snapshot_restore"},
+        {"restore_kv_cache_after_snapshot_restore"},
     )
     backend.AscendC8MXFPAttentionBackendImpl = impl_ns["AscendC8MXFPAttentionBackendImpl"]
     monkeypatch.setitem(sys.modules, path, backend)
