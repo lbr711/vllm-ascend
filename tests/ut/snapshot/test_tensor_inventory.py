@@ -27,6 +27,44 @@ inventory = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(inventory)
 
 
+def test_sfa_dcp_remap_inventory_keeps_owner_aliases(tmp_path, monkeypatch):
+    source = ROOT / "vllm_ascend/attention/context_parallel/sfa_cp.py"
+    tree = ast.parse(source.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AscendSFADCPImpl")
+    assert "reset_runtime_state_after_snapshot_restore" not in {getattr(n, "name", "") for n in cls.body}
+    cls.bases = []
+    cls.decorator_list = []
+    cls.body = [
+        n for n in cls.body if getattr(n, "name", "") in ("_initialize_sparse_index_remap", "_register_remap_buffers")
+    ]
+    tree.body = [cls]
+    ns = {"torch": torch}
+    exec(compile(tree, str(source), "exec"), ns)
+    model = torch.nn.Module()
+    impl = model.impl = ns["AscendSFADCPImpl"]()
+    impl._dcp_index_topk = 8
+    impl.layer_name = "layer0"
+    impl.vllm_config = SimpleNamespace(compilation_config=SimpleNamespace(static_forward_context={"layer0": model}))
+    impl._initialize_sparse_index_remap(torch.device("cpu"))
+    impl._register_remap_buffers()
+    inventory.capture_tensor_inventory(model)
+    assert len(inventory.inventory_state(model)["tensors"]) == 2
+    saved = (impl._remap_order, impl._remap_invalid_index)
+    addresses = tuple(t.data_ptr() for t in saved)
+    namespace, _ = checkpoint_namespace(monkeypatch)
+    path = str(tmp_path / "remap.pth")
+    namespace["dump_state_dict"](model, path)
+    for _ in range(2):
+        for tensor in saved:
+            tensor.fill_(42)
+        namespace["restore_state_dict"](model, path, "remap")
+        torch.testing.assert_close(impl._remap_order, torch.arange(8, dtype=torch.float32))
+        assert impl._remap_invalid_index.item() == -1
+        assert impl._remap_order is model._dcp_sfa_remap_order is saved[0]
+        assert impl._remap_invalid_index is model._dcp_sfa_remap_invalid_index is saved[1]
+        assert tuple(t.data_ptr() for t in saved) == addresses
+
+
 @pytest.mark.parametrize("apply_yarn", [False, True])
 def test_rope_inventory_restores_shared_global_tables(tmp_path, monkeypatch, apply_yarn):
     # Execute the real constructor and frequency calculation without NPU imports.

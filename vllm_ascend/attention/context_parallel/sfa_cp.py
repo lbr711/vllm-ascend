@@ -1517,10 +1517,6 @@ class AscendSFADCPImpl(DCPImplMixin, AscendSFAImpl):
             elif existing is not tensor:
                 raise RuntimeError(f"DCP SFA remap buffer {name!r} is already registered with a different tensor.")
 
-    def reset_runtime_state_after_snapshot_restore(self) -> None:
-        super().reset_runtime_state_after_snapshot_restore()
-        self._initialize_sparse_index_remap(self._remap_order.device)
-
     @staticmethod
     def _has_prefill(attn_metadata: M) -> bool:
         # PCP ranks with no local prefill still join the DCP KV gather and use
