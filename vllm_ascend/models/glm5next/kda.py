@@ -283,7 +283,7 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         return torch.cat(weights, dim=0).transpose(0, 1).to(dtype=dtype).contiguous()
 
     @torch.inference_mode()
-    def rebuild_derived_tensors_after_snapshot_restore(
+    def restore_lazy_tensors_after_snapshot_restore(
         self, _act_dtype: torch.dtype, *, restored_tensor_ids: set[int] | frozenset[int] = frozenset()
     ) -> None:
         # This lazy copy is not in state_dict. Source Parameters have already

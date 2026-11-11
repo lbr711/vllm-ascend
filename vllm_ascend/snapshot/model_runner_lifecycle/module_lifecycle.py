@@ -154,12 +154,18 @@ def reset_modules_runtime_state(models: Iterable[nn.Module | None]) -> int:
     return reset_count
 
 
-def rebuild_model_derived_tensors_after_snapshot_restore(
+@torch.inference_mode()
+def restore_model_non_checkpoint_state(
     model: nn.Module,
     act_dtype: torch.dtype,
     label: str,
 ) -> None:
-    """Rebuild derived state not already restored by the checkpoint."""
+    """Restore model-owned constants and lazy tensors after checkpoint loading.
+
+    Constants hooks also repair external cache references. Lazy tensor hooks
+    receive checkpoint coverage so they do not rebuild already restored values.
+    Request state and native resources are handled by their own lifecycle.
+    """
     restored_tensor_ids = {id(t) for t in model.parameters()}
     for module in model.modules():
         restored_tensor_ids.update(
@@ -170,7 +176,9 @@ def rebuild_model_derived_tensors_after_snapshot_restore(
 
         restored_tensor_ids.update(id(t) for t in inventory_tensors(model).values())
     for item in _iter_modules_and_impls((model,)):
-        rebuild = getattr(item, "rebuild_derived_tensors_after_snapshot_restore", None)
-        if not callable(rebuild):
-            continue
-        rebuild(act_dtype, restored_tensor_ids=restored_tensor_ids)
+        restore_constants = getattr(item, "restore_constants_after_snapshot_restore", None)
+        if callable(restore_constants):
+            restore_constants()
+        restore_lazy = getattr(item, "restore_lazy_tensors_after_snapshot_restore", None)
+        if callable(restore_lazy):
+            restore_lazy(act_dtype, restored_tensor_ids=restored_tensor_ids)

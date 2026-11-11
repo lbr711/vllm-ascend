@@ -1736,9 +1736,9 @@ class AscendDSAImpl(AttentionImplBase[Any]):
         ascend_config = get_ascend_config()
         self.multistream_dsv4_dsa_overlap = ascend_config.multistream_dsv4_dsa_overlap
 
-    def reset_runtime_state_after_snapshot_restore(self) -> None:
+    def restore_constants_after_snapshot_restore(self) -> None:
         if self.turboquant is not None:
-            self.turboquant.reset_runtime_state_after_snapshot_restore()
+            self.turboquant.restore_constants_after_snapshot_restore()
 
     def _write_kv_cache(self, cache, kv, slot_mapping, *, quantize: bool):
         if self.turboquant is not None:
