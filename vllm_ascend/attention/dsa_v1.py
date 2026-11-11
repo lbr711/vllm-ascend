@@ -782,6 +782,9 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
                     tensor.zero_()
         if self.dspark_swa_indices_buffer is not None:
             self.dspark_swa_indices_buffer.zero_()
+
+    def restore_constants_after_snapshot_restore(self) -> None:
+        """Restore builder-owned constants allocated after model inventory capture."""
         if self.hadamard is not None:
             from scipy.linalg import hadamard  # type: ignore[import-untyped]
 

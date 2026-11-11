@@ -1020,11 +1020,8 @@ class AscendSFAImpl(MLAAttentionImpl):
         if self.turboquant is not None:
             self.turboquant.reset_runtime_state_after_snapshot_restore()
         if self.preprocess_type is PreprocessType.PROLOG_V3 and self.enable_sparse_sfa_c8:
-            self.sfa_qsfa_k_nope_clip_alpha = torch.ones(
-                1,
-                dtype=torch.float32,
-                device=self.weight_dq.device,
-            )
+            # clip_alpha is load-time state restored in place by the inventory.
+            # Empty cache placeholders are deliberately excluded from it.
             self.sfa_qsfa_kr_cache_dummy = torch.empty(
                 0,
                 dtype=torch.bfloat16,

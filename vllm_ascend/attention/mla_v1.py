@@ -1437,7 +1437,14 @@ class AscendMLAImpl(MLAAttentionImpl):
         if supports_strided_mla_cache(config, attn_module, cache_spec):
             self._prepare_prolog_v3_weights()
 
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(
+        self, act_dtype: torch.dtype, *, restored_tensor_ids: set[int] | frozenset[int] = frozenset()
+    ) -> None:
+        current = getattr(self, "_prolog_v3_weights", None)
+        if current is None:
+            return
+        if all(id(value) in restored_tensor_ids for value in current.values() if isinstance(value, torch.Tensor)):
+            return
         # Retained source projections have been restored before this hook.
         self._refresh_prolog_v3_weights()
 

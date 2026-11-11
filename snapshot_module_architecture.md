@@ -1018,6 +1018,24 @@ MLA-DCP 的 super 调用同步移除：基础 MLA 不再需要重置 hook，DCP 
 对象，其请求清理 hook 保留。RoPE 全局状态、TurboQuant helper、惰性 PROLOG/KDA
 缓存也不由此次枚举完整覆盖，不能直接删除其恢复逻辑。
 
+### Builder 与后端恢复的职责边界
+
+- 模型加载期 tensor 由 checkpoint/inventory 原位恢复，不扩展为任意 Python 对象遍历。
+- DSA/DSA-CP builder 的 `reset_runtime_state_after_snapshot_restore` 清理请求状态；
+  `restore_constants_after_snapshot_restore` 恢复加载后分配的 Hadamard 常量。
+  DSA v4.1 使用同一常量阶段重新绑定全局 RoPE；先清理请求/PCP 临时引用，再绑定常量。
+  PCP 包装器负责其内部 builder，中央调度器不递归遍历私有对象。
+- C8 MXFP 的 `restore_cache_after_snapshot_restore(layer)` 由后端实现，负责从已恢复
+  参数填充 KV cache 的静态 V scale。中央模块调度器仅传入缓存所属 layer，不判断具体后端类型。
+- 通信组、native handle、编译缓存仍走原有生命周期；惰性派生缓存仍保留恢复 hook。
+  此次没有把全部 runtime hook 改名，也没有把动态状态纳入权重文件。
+
+派生恢复调度传递 checkpoint 已覆盖的 tensor 对象 ID，MLA PROLOG 投影仅在存在
+未覆盖 tensor 时重建；加载期已记录的投影不再重复计算。KDA 使用同样的覆盖判断，
+加载后惰性生成的 merged convolution 仍需重建。SFA 的 clip_alpha 只由 inventory
+原位恢复，不再在 runtime hook 中重新分配。全局 RoPE、TurboQuant helper、空 cache
+占位符和请求元数据不因此删除：它们并不由模型 inventory 完整负责。
+
 ```text
 Motor
 └── metadata 准备、原生引擎拉起、健康探测、状态转换、恢复后重新注册与 endpoint 重绑定

@@ -906,6 +906,8 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
             tensor.zero_()
         self._c2_source_cos.fill_(1)
         self._device_metadata_tasks = ()
+
+    def restore_constants_after_snapshot_restore(self) -> None:
         # Global RoPE tables are rebuilt before metadata builders are reset.
         self.prepare_source_rope()
 
