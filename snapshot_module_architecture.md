@@ -1053,6 +1053,10 @@ MLA-DCP 的 super 调用同步移除：基础 MLA 不再需要重置 hook，DCP 
 原位恢复，不再在 runtime hook 中重新分配。TurboQuant helper、空 cache 占位符
 和请求元数据不因此删除：它们并不由模型 inventory 完整负责。
 
+SFA-DCP 的 `_remap_order` 和 `_remap_invalid_index` 在加载期已创建，并与所属层的
+非持久化 buffer 共享对象，统一由 inventory 原位恢复。删除 DCP 子类仅为重新分配
+这两个 tensor 而添加的 runtime override；继承的 DCP 通信刷新及 SFA 请求清理不变。
+
 `rope_dsv4.py` 回归 v0.30.0 基线实现：移除快照专用重算函数、首行数值有效性探测、
 重建参数副本和额外 device 参数。完整 cos/sin 表只通过 inventory 恢复；运行期
 按位置 gather 的 scratch buffer 保持基线的消费前写入逻辑。Builder 的外部 RoPE
