@@ -412,7 +412,6 @@ class AscendMlaDCPImpl(DCPImplMixin, AscendMLAImpl):
         )
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
-        super().reset_runtime_state_after_snapshot_restore()
         self._refresh_dcp_group()
         for buffers in (self._dcp_current_kv_buffers, self._dcp_prefill_current_kv_buffers):
             if buffers is not None:

@@ -975,6 +975,49 @@ sequenceDiagram
 
 ## 8. 架构边界总结
 
+### 加载期 Tensor 通用枚举与原位恢复
+
+`tensor_inventory.py` 在 Worker 完成 target/drafter 加载后、分配 KV cache 和
+运行 warmup 前记录 tensor 路径。仅在启用快照时执行，不修改模型的 buffer
+注册方式，也不改变 `state_dict` 的键名。
+
+- 覆盖 Module/Impl 的普通及私有属性、非持久化 buffer、嵌套 list/tuple/dict。
+- 已由 Parameter/persistent buffer 持久化的同一对象不重复保存。
+- 空 tensor 不记录，避免将加载期的空 KV cache 占位符跟踪到运行期 KV cache。
+- suspend 时解析已记录路径并保存当前值；resume 时先校验路径、对象别名、
+  shape/dtype，然后调用现有 `copy_checkpoint_tensor` 原位写回，不替换对象或 storage。
+- 原位恢复仍使用现有 NZ 特殊布局处理，并在 inference mode 下执行。
+
+checkpoint 沿用原来的 `.pth` 文件名，不增加版本后缀。新容器必须重新制作
+快照并生成配套权重文件；已有文件缺少 inventory 时明确报错，不复用或覆盖，
+需要使用新的权重目录重新生成。
+未记录 inventory 的旧调用仍使用原来的 state_dict 流程。共享目录的文件锁和
+已完成文件复用逻辑保留，新格式复用前额外校验 inventory 结构。
+
+枚举并不推断 tensor 的业务含义：加载期已经分配的工作 buffer 也可能被记录。
+因此请求清零、通信组/原生资源重建、以及加载后惰性生成 tensor 的专用 hook
+仍保留。任意 Python helper、全局缓存、属性 getter 不在本次遍历范围内。
+已删除的重复适配：
+
+| 原有适配 | 通用恢复的覆盖来源 |
+| --- | --- |
+| RMSNorm 无权重常量填 1 | 加载期普通 `weight` tensor |
+| Indexer Hadamard 重建 | 加载期非持久化 `q_hadamard/k_hadamard` buffer |
+| KPool Indexer 派生权重重建 | 加载期 `_key_weight` 等普通私有属性 |
+| MLA writer workspace 索引重建 | 加载期 workspace tuple 中的索引 tensor |
+| MLA/SFA `_persist_snapshot_derived_tensors` | 直接枚举 `impl` 属性，不再借挂到 `q_proj` |
+| W8A8/PDMix/KV-C8 派生 scale 的显式 persist | 加载期 layer 属性或原有 Parameter |
+| W4A4/W4A8/W8A8/MXFP/非量化 MoE expert list 的显式 persist | 源参数删除后仍存在的普通 list，包括 MegaMoE list |
+| RoutedExperts 的 expert map 显式 persist | `_ascend_expert_map` 普通属性、上游非持久化 map/routing buffer |
+
+`tensor_persistence.py` 及其全部调用已删除。量化转换、源参数删除、expert list
+构造及推理消费流程不变；不再为快照将普通 tensor 转成 buffer 或注册额外别名。
+
+MLA-DCP 的 super 调用同步移除：基础 MLA 不再需要重置 hook，DCP 自身仍刷新
+通信组和后续阶段分配的索引。DSA/CP metadata builder 不属于模型加载期枚举
+对象，其请求清理 hook 保留。RoPE 全局状态、TurboQuant helper、惰性 PROLOG/KDA
+缓存也不由此次枚举完整覆盖，不能直接删除其恢复逻辑。
+
 ```text
 Motor
 └── metadata 准备、原生引擎拉起、健康探测、状态转换、恢复后重新注册与 endpoint 重绑定

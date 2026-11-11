@@ -80,7 +80,6 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8MXFP8DynamicLinearMethod,
 )
 from vllm_ascend.quantization.utils import enable_fa_quant
-from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,
@@ -1383,7 +1382,6 @@ class AscendMLAImpl(MLAAttentionImpl):
             self.supports_prolog_v3_writer() or (self._supports_flashmla_mlapo() and not self.dcp_enabled)
         ):
             self._prepare_flashmla_writer_buffers()
-        self._persist_snapshot_derived_tensors()
 
     def _prepare_flashmla_writer_buffers(self) -> None:
         """Keep a bounded dense PROLOG workspace alive across graph replay."""
@@ -1442,32 +1440,6 @@ class AscendMLAImpl(MLAAttentionImpl):
     def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
         # Retained source projections have been restored before this hook.
         self._refresh_prolog_v3_weights()
-
-    def reset_runtime_state_after_snapshot_restore(self) -> None:
-        for buffers in (self._strided_kv_workspace, self._flashmla_writer_buffers):
-            if buffers is not None:
-                # KV scratch is overwritten by prolog; slot indices are constants.
-                indices = buffers[2]
-                indices.copy_(torch.arange(indices.numel(), dtype=indices.dtype, device=indices.device))
-
-    def _persist_snapshot_derived_tensors(self) -> None:
-        if self.vllm_config.snapshot_config is None:
-            return
-        host = self.q_proj
-        for name in (
-            "W_UV",
-            "W_UK_T",
-            "mlapo_W_UK_T",
-            "weight_dq",
-            "weight_dkv_kr",
-            "weight_uq_qr",
-            "dequant_scale_w_uq_qr",
-            "dequant_scale_w_dq",
-            "dequant_scale_w_dkv_kr",
-        ):
-            tensor = getattr(self, name, None)
-            if isinstance(tensor, torch.Tensor):
-                set_persistent_tensor(host, f"_snapshot_{name}", tensor)
 
     def _load_fa_quant_scales(self):
         layer = self.vllm_config.compilation_config.static_forward_context[self.layer_name]

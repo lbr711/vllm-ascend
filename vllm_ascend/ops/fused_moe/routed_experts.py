@@ -29,12 +29,7 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
 from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
 from vllm.model_executor.utils import replace_parameter
 
-from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import (
-    persist_tensor_attributes,
-    persist_tensor_lists,
-)
-
-# Keep snapshot imports separate from the baseline imports patched by FT.
+# Keep the existing import grouping stable for FT patches.
 # isort: split
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, use_cann_megamoe
@@ -141,8 +136,6 @@ class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
                 else:
                     layer.w13_weight_list = [weight.clone() for weight in layer.w13_weight.data.unbind(dim=0)]
                     layer.w2_weight_list = [weight.clone() for weight in layer.w2_weight.data.unbind(dim=0)]
-                    if getattr(get_current_vllm_config(), "snapshot_config", None) is not None:
-                        persist_tensor_lists(layer, ("w13_weight_list", "w2_weight_list"))
                     del layer.w13_weight
                     del layer.w2_weight
                     torch.npu.empty_cache()
@@ -464,16 +457,6 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
                 draft_model_config = vllm_config.speculative_config.draft_model_config
                 draft_model_config.draft_moe_quant_type = self.quant_type
 
-    def update_expert_map_info(self):
-        super().update_expert_map_info()
-        if get_current_vllm_config().snapshot_config is not None:
-            # MRV2 consumes the upstream maps. V1's separate Ascend execution
-            # map is registered in init_eplb. Keep the manager aliases intact.
-            names = ["_expert_map", "expert_mask"]
-            if self.expert_map_manager.routing_tables is not None:
-                names.extend(("expert_global_to_physical", "expert_physical_to_global", "expert_local_to_global"))
-            persist_tensor_attributes(self, names)
-
     def get_expert_weights(self) -> Iterable[torch.Tensor]:
         try:
             get_weight_views = self.quant_method.get_eplb_weight_views
@@ -545,9 +528,6 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
             n_shared_experts,
             tp_size=vllm_config.parallel_config.tensor_parallel_size,
         )
-        if vllm_config.snapshot_config is not None:
-            # V1 dispatch consumes this independent device map, not _expert_map.
-            persist_tensor_attributes(self, ("_ascend_expert_map",))
 
         self.moe_config.global_redundant_expert_num = self.global_redundant_expert_num
         local_num_experts = self.moe_config.num_local_experts
@@ -624,8 +604,7 @@ class AscendRoutedExperts(RoutedExperts):  # type: ignore[no-redef]
 
     @ascend_expert_map.setter
     def ascend_expert_map(self, expert_map: torch.Tensor | None) -> None:
-        # Preserve buffer registration when replacing a snapshot-persistent map.
-        torch.nn.Module.__setattr__(self, "_ascend_expert_map", expert_map)
+        self._ascend_expert_map = expert_map
 
     def update_expert_map(self, new_expert_map: torch.Tensor | None = None) -> None:
         """Update the upstream map or preserve the legacy Ascend update API."""

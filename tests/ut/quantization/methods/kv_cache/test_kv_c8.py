@@ -356,8 +356,8 @@ class TestAscendFAQuantAttentionMethodProcessWeights(unittest.TestCase):
         self.layer.fa_k.offset = nn.Parameter(torch.tensor([[1]], dtype=torch.int8), requires_grad=False)
         self.method.kv_lora_rank = 4
         self.method.process_weights_after_loading(self.layer)
-        self.assertIn("quant_kscale", self.layer.state_dict())
-        self.assertIn("fak_descale_reciprocal", self.layer.state_dict())
+        self.assertNotIn("quant_kscale", self.layer.state_dict())
+        self.assertNotIn("fak_descale_reciprocal", self.layer.state_dict())
         expected = self.layer.quant_kscale.clone()
         self.layer.fak_descale_reciprocal.zero_()
         self.layer.quant_kscale.zero_()

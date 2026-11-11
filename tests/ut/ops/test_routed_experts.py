@@ -9,7 +9,8 @@ import torch
 
 import vllm_ascend.ops.fused_moe.routed_experts as routed_experts_module
 from vllm_ascend.ops.fused_moe.routed_experts import AscendRoutedExperts, EplbExpertTensorList
-from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import restore_state_dict
+from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import dump_state_dict, restore_state_dict
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import capture_tensor_inventory, inventory_tensors
 
 
 class _FakeNpuTensor:
@@ -60,8 +61,11 @@ def test_snapshot_expert_maps_preserve_manager_aliases(snapshot_enabled):
     ):
         layer.update_expert_map_info()
     assert layer._expert_map is mapping
-    assert ("_expert_map" in layer.state_dict()) == snapshot_enabled
-    assert ("expert_global_to_physical" in layer.state_dict()) == snapshot_enabled
+    assert "_expert_map" not in layer.state_dict()
+    assert "expert_global_to_physical" not in layer.state_dict()
+    if snapshot_enabled:
+        capture_tensor_inventory(layer)
+        assert any(t is mapping for t in inventory_tensors(layer).values())
 
 
 def _routed_experts(weight_views):
@@ -322,11 +326,12 @@ def test_v1_execution_map_checkpoint_round_trip(snapshot_enabled, has_map, tmp_p
     ):
         layer.init_eplb(0)
     assert layer.ascend_expert_map is mapping
-    assert ("_ascend_expert_map" in layer._buffers) == snapshot_enabled
-    assert ("_ascend_expert_map" in layer.state_dict()) == (snapshot_enabled and has_map)
+    assert "_ascend_expert_map" not in layer._buffers
+    assert "_ascend_expert_map" not in layer.state_dict()
     if snapshot_enabled and has_map:
         path = tmp_path / "map.pth"
-        torch.save(layer.state_dict(), path)
+        capture_tensor_inventory(layer)
+        dump_state_dict(layer, str(path))
         address = mapping.data_ptr()
         for _ in range(2):
             mapping.zero_()
@@ -337,8 +342,8 @@ def test_v1_execution_map_checkpoint_round_trip(snapshot_enabled, has_map, tmp_p
         replacement = expected.clone()
         layer.update_expert_map(replacement)
         assert layer.ascend_expert_map is replacement
-        assert layer._buffers["_ascend_expert_map"] is replacement
-        assert "_ascend_expert_map" not in layer.__dict__
+        assert "_ascend_expert_map" not in layer._buffers
+        assert layer.__dict__["_ascend_expert_map"] is replacement
         assert layer.expert_map_manager._expert_map is replacement
 
 
@@ -358,7 +363,8 @@ def test_v2_execution_map_checkpoint_preserves_manager_aliases(tmp_path):
     ):
         layer.update_expert_map_info()
     path = tmp_path / "v2_map.pth"
-    torch.save(layer.state_dict(), path)
+    capture_tensor_inventory(layer)
+    dump_state_dict(layer, str(path))
     for _ in range(2):
         mapping.zero_()
         for table in tables:

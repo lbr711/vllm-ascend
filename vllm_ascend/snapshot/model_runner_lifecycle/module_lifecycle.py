@@ -17,10 +17,19 @@ from vllm_ascend.snapshot.model_runner_lifecycle.h2d_copy import copy_checkpoint
 
 
 def dump_state_dict(model: nn.Module, path: str) -> None:
+    has_inventory = hasattr(model, "_snapshot_tensor_paths")
+    if has_inventory:
+        from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import inventory_state, validate_inventory
+
     # Keep the lock file: unlinking it could let writers lock different inodes.
     with open(f"{path}.lock", "a") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if os.path.exists(path):
+            if has_inventory:
+                saved = torch.load(path, map_location="cpu", mmap=True)
+                if "inventory" not in saved or "state_dict" not in saved:
+                    raise ValueError(f"Checkpoint lacks tensor inventory; regenerate it in a new directory: {path}")
+                validate_inventory(model, saved["inventory"])
             logger.debug(
                 "[snapshot][checkpoint] dump skipped: path=%s reason=already_exists",
                 path,
@@ -28,7 +37,10 @@ def dump_state_dict(model: nn.Module, path: str) -> None:
             return
 
         start = time.time()
-        torch.save(model.state_dict(), path)
+        state = model.state_dict()
+        if has_inventory:
+            state = {"state_dict": state, "inventory": inventory_state(model)}
+        torch.save(state, path)
     gc.collect()
     torch.npu.empty_cache()
     try:
@@ -48,7 +60,12 @@ def dump_state_dict(model: nn.Module, path: str) -> None:
     )
 
 
+@torch.inference_mode()
 def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
+    has_inventory = hasattr(model, "_snapshot_tensor_paths")
+    if has_inventory:
+        from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import validate_inventory
+
     if not os.path.exists(path):
         logger.error(
             "[snapshot][checkpoint] restore failed: model=%s path=%s reason=not_found",
@@ -59,6 +76,13 @@ def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
 
     start = time.time()
     state_dict = torch.load(path, map_location="cpu", mmap=True)
+    inventory = None
+    if has_inventory:
+        if "inventory" not in state_dict or "state_dict" not in state_dict:
+            raise ValueError(f"Checkpoint lacks tensor inventory; regenerate it in a new directory: {path}")
+        inventory = state_dict["inventory"]
+        destinations = validate_inventory(model, inventory)
+        state_dict = state_dict["state_dict"]
     restored = 0
     parameters = dict(model.named_parameters())
     buffers = dict(model.named_buffers())
@@ -69,6 +93,9 @@ def restore_state_dict(model: nn.Module, path: str, label: str) -> None:
         if name in buffers:
             copy_checkpoint_tensor(buffers[name].data, cpu_tensor)
             restored += 1
+    if inventory is not None:
+        for name, tensor in destinations.items():
+            copy_checkpoint_tensor(tensor, inventory["tensors"][name])
     logger.info(
         "[snapshot][checkpoint] restore completed: model=%s path=%s tensors=%d/%d duration=%.4f s",
         label,

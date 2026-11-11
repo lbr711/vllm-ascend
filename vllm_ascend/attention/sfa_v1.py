@@ -64,7 +64,6 @@ from vllm_ascend.quantization.methods import (
     AscendW8A8MXFP8DynamicLinearMethod,
 )
 from vllm_ascend.quantization.methods.kv_cache.turboquant.latent import TurboQuantLatent
-from vllm_ascend.snapshot.model_runner_lifecycle.tensor_persistence import set_persistent_tensor
 from vllm_ascend.utils import (
     ACL_FORMAT_FRACTAL_ND,
     ACL_FORMAT_FRACTAL_NZ,
@@ -1014,35 +1013,6 @@ class AscendSFAImpl(MLAAttentionImpl):
 
         if self.has_indexer:
             self.indexer.process_weights_after_loading()
-        self._persist_snapshot_derived_tensors()
-
-    def _persist_snapshot_derived_tensors(self) -> None:
-        if self.vllm_config.snapshot_config is None:
-            return
-        for name in (
-            "W_UV",
-            "W_UK_T",
-            "weight_dq",
-            "weight_dkv_kr",
-            "weight_uq_qr",
-            "dequant_scale_w_uq_qr",
-            "dequant_scale_w_dq",
-            "dequant_scale_w_dkv_kr",
-            "weight_dq_scale",
-            "weight_dkv_kr_scale",
-            "weight_uq_qr_scale",
-            "wd_qkv",
-            "deq_scale_qkv",
-            "quant_bias_qkv",
-            "wu_q",
-            "qb_deq_scl",
-            "qb_qt_bias",
-            "ctkv_scale",
-            "q_nope_scale",
-        ):
-            tensor = getattr(self, name, None)
-            if isinstance(tensor, torch.Tensor):
-                set_persistent_tensor(self.q_proj, f"_snapshot_{name}", tensor)
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         if self.topk_indices_buffer is not None:
