@@ -461,7 +461,7 @@ def checkpoint_namespace():
         "os": os,
         "fcntl": fcntl,
         "nn": torch.nn,
-        "torch": SimpleNamespace(save=torch.save, load=torch.load, npu=Mock()),
+        "torch": SimpleNamespace(save=torch.save, load=torch.load, npu=Mock(), inference_mode=torch.inference_mode),
         "time": SimpleNamespace(time=lambda: 0),
         "logger": Mock(),
         "gc": SimpleNamespace(collect=lambda: None),
@@ -477,7 +477,11 @@ def checkpoint_namespace():
 @pytest.mark.parametrize("is_kv_consumer", [False, True])
 def test_pdmix_scale_checkpoint_preserves_storage_and_role(snapshot_enabled, is_kv_consumer):
     ns = {"nn": torch.nn, "torch": torch, "Iterable": Iterable}
-    load_nodes("snapshot/model_runner_lifecycle/tensor_persistence.py", ["persist_tensor_attributes"], ns)
+    load_nodes(
+        "snapshot/model_runner_lifecycle/tensor_inventory.py",
+        ["capture_tensor_inventory", "inventory_tensors", "inventory_state", "validate_inventory"],
+        ns,
+    )
     ns.update(
         Base=object,
         get_current_vllm_config=lambda: SimpleNamespace(snapshot_config=object() if snapshot_enabled else None),
@@ -498,17 +502,19 @@ def test_pdmix_scale_checkpoint_preserves_storage_and_role(snapshot_enabled, is_
     assert layer.is_kv_consumer is is_kv_consumer
     expected = layer.weight_scale.float().clone()
     torch.testing.assert_close(layer.weight_scale_fp32, expected)
-    assert ("weight_scale_fp32" in layer.state_dict()) is snapshot_enabled
-    assert ("weight_scale_fp32" in layer._buffers) is snapshot_enabled
+    assert "weight_scale_fp32" not in layer.state_dict()
+    assert "weight_scale_fp32" not in layer._buffers
     if snapshot_enabled:
+        ns["capture_tensor_inventory"](layer)
         saved = io.BytesIO()
-        torch.save(layer.state_dict(), saved)
+        torch.save(ns["inventory_state"](layer), saved)
         saved.seek(0)
         checkpoint = torch.load(saved, weights_only=True)
         original = layer.weight_scale_fp32
         for _ in range(2):
             original.zero_()
-            layer.load_state_dict(checkpoint)
+            for path, tensor in ns["validate_inventory"](layer, checkpoint).items():
+                tensor.copy_(checkpoint["tensors"][path])
             assert layer.weight_scale_fp32 is original
             torch.testing.assert_close(layer.weight_scale_fp32, expected)
 
@@ -1282,27 +1288,37 @@ def test_turboquant_restore_preserves_contents_and_addresses(legacy):
 
 
 @pytest.mark.parametrize("c8,c4", [(False, False), (True, False), (False, True)])
-def test_indexer_restores_hadamard_for_both_quantization_paths(c8, c4):
-    ns = {"Base": object, "torch": torch}
+def test_indexer_inventory_restores_hadamard_for_both_quantization_paths(c8, c4):
+    ns = {"Base": torch.nn.Module, "torch": torch}
     load_nodes(
         "attention/indexer.py",
         ["AscendSFAIndexerBackend"],
         ns,
-        {"enable_sparse_li_quant", "rebuild_derived_tensors_after_snapshot_restore"},
+        {"enable_sparse_li_quant"},
     )
     backend = ns["AscendSFAIndexerBackend"]()
     backend.enable_sparse_li_c8, backend.enable_sparse_li_c4 = c8, c4
-    old = backend.q_hadamard = backend.k_hadamard = torch.zeros(2)
-
-    def rebuild():
-        assert backend.q_hadamard is None and backend.k_hadamard is None
-        backend.q_hadamard = backend.k_hadamard = torch.ones(2)
-
-    backend.process_weights_after_loading = Mock(side_effect=rebuild)
+    for name in ("q_hadamard", "k_hadamard"):
+        backend.register_buffer(name, torch.ones(2) if c8 or c4 else None, persistent=False)
+    inventory_ns = {"torch": torch, "nn": torch.nn}
+    load_nodes(
+        "snapshot/model_runner_lifecycle/tensor_inventory.py",
+        ["capture_tensor_inventory", "inventory_tensors", "inventory_state", "validate_inventory"],
+        inventory_ns,
+    )
+    inventory_ns["capture_tensor_inventory"](backend)
+    stream = io.BytesIO()
+    torch.save(inventory_ns["inventory_state"](backend), stream)
+    stream.seek(0)
+    state = torch.load(stream, weights_only=True)
+    old = backend.q_hadamard
     for _ in range(2):
-        backend.rebuild_derived_tensors_after_snapshot_restore(torch.bfloat16)
-    assert backend.process_weights_after_loading.call_count == (2 if c8 or c4 else 0)
-    if not (c8 or c4):
+        for tensor in inventory_ns["inventory_tensors"](backend).values():
+            tensor.zero_()
+        for path, tensor in inventory_ns["validate_inventory"](backend, state).items():
+            tensor.copy_(state["tensors"][path])
+        if c8 or c4:
+            assert torch.all(backend.q_hadamard == 1) and torch.all(backend.k_hadamard == 1)
         assert backend.q_hadamard is old
 
 
@@ -1481,27 +1497,17 @@ def test_mla_current_kv_index_constant_restored_in_place(initialized):
             torch.testing.assert_close(prefill_indices, torch.arange(16))
         assert (scratch == 456).all()  # Overwritten by prolog, not a constant.
     assert impl._refresh_dcp_group.call_count == 2
-    assert base_reset.call_count == 2
+    base_reset.assert_not_called()  # Base MLA load-time tensors use the inventory.
 
 
-def test_mla_base_restores_writer_indices_and_refreshes_prolog():
+def test_mla_base_refreshes_lazy_prolog():
     rebuild = "rebuild_derived_tensors_after_snapshot_restore"
     ns = {"Base": object, "torch": torch}
-    load_nodes("attention/mla_v1.py", ["AscendMLAImpl"], ns, {HOOK, rebuild})
+    load_nodes("attention/mla_v1.py", ["AscendMLAImpl"], ns, {rebuild})
     impl = ns["AscendMLAImpl"]()
     impl._refresh_prolog_v3_weights = Mock()
-    scratch = torch.full((4,), 99)
-    indices = [torch.full((4,), -1, dtype=torch.int64) for _ in range(2)]
-    impl._strided_kv_workspace = (scratch, scratch, indices[0])
-    impl._flashmla_writer_buffers = (scratch, scratch, indices[1])
-    addresses = [tensor.data_ptr() for tensor in indices]
     for _ in range(2):
         getattr(impl, rebuild)(torch.bfloat16)
-        getattr(impl, HOOK)()
-        for tensor, address in zip(indices, addresses):
-            torch.testing.assert_close(tensor, torch.arange(4))
-            assert tensor.data_ptr() == address
-        assert (scratch == 99).all()
     assert impl._refresh_prolog_v3_weights.call_count == 2
 
 

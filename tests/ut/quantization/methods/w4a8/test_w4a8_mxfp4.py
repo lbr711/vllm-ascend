@@ -10,6 +10,7 @@ from vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4 import (
     AscendW4A8MXFPDynamicFusedMoEMethod,
     AscendW4A8MXFPDynamicLinearMethod,
 )
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import capture_tensor_inventory, inventory_tensors
 
 
 class TestAscendW4A8MXFP4LinearMethod(TestBase):
@@ -214,20 +215,23 @@ class TestAscendW4A8MXFP4MoEMethod(TestBase):
 
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.torch_npu")
-    def test_snapshot_persists_expert_lists_only_when_enabled(self, mock_npu, mock_vllm):
+    def test_snapshot_inventory_covers_expert_lists(self, mock_npu, mock_vllm):
         mock_npu.npu_format_cast.side_effect = lambda x, *a, **kw: x
         self.scheme.use_expert_weight_list = True
         for enabled in (False, True):
             mock_vllm.return_value.snapshot_config = object() if enabled else None
             layer = self._make_moe_layer()
             self.scheme.process_weights_after_loading(layer)
+            if enabled:
+                capture_tensor_inventory(layer)
+                captured = {id(t) for t in inventory_tensors(layer).values()}
             for name in ("w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"):
                 self.assertFalse(hasattr(layer, name))
                 for index, tensor in enumerate(getattr(layer, f"{name}_list")):
                     key = f"_snapshot_{name}_list_{index}"
-                    self.assertEqual(key in layer.state_dict(), enabled)
+                    self.assertNotIn(key, layer.state_dict())
                     if enabled:
-                        self.assertIs(layer.get_buffer(key), tensor)
+                        self.assertIn(id(tensor), captured)
 
     @staticmethod
     def _make_moe_layer():
@@ -304,14 +308,16 @@ class TestAscendW4A8MXFP4MoEMethod(TestBase):
                     self.assertEqual(scale.dtype, torch.float8_e8m0fnu)
                     self.assertEqual(scale.shape, (original.shape[1], original.shape[2] // 2, 2))
                     torch.testing.assert_close(scale.view(torch.uint8).flatten(), original[expert].flatten())
+        capture_tensor_inventory(layer)
+        captured = {id(t) for t in inventory_tensors(layer).values()}
         for name in (
             "cann_mega_moe_w13_weight_list",
             "cann_mega_moe_w2_weight_list",
             "cann_mega_moe_w13_weight_scale_list",
             "cann_mega_moe_w2_weight_scale_list",
         ):
-            for index, tensor in enumerate(getattr(layer, name)):
-                self.assertIs(layer.get_buffer(f"_snapshot_{name}_{index}"), tensor)
+            for tensor in getattr(layer, name):
+                self.assertIn(id(tensor), captured)
 
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w4a8.w4a8_mxfp4.use_cann_megamoe", return_value=False)

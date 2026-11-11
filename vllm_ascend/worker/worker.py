@@ -873,6 +873,15 @@ class NPUWorker(WorkerBase):
         with context, set_current_vllm_config(self.vllm_config):
             self.model_runner.load_model()
 
+        if self.vllm_config.snapshot_config is not None:
+            from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import get_drafter_model
+            from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import capture_tensor_inventory
+
+            capture_tensor_inventory(self.model_runner.get_model())
+            draft_model = get_drafter_model(self.model_runner)
+            if draft_model is not None:
+                capture_tensor_inventory(draft_model)
+
         if self.vllm_config.weight_transfer_config is not None:
             from vllm.distributed.weight_transfer.factory import (
                 WeightTransferEngineFactory,

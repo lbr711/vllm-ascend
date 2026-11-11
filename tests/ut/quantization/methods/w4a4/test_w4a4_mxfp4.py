@@ -11,6 +11,7 @@ from vllm_ascend.quantization.methods.w4a4.w4a4_mxfp4 import (
     AscendW4A4MXFP4DynamicLinearMethod,
     _rename_packed_weight_parameter,
 )
+from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import capture_tensor_inventory, inventory_tensors
 from vllm_ascend.utils import COMPRESSED_TENSORS_METHOD
 
 
@@ -211,14 +212,16 @@ class TestAscendW4A4MXFP4MoEMethod(TestBase):
                 expected = expected.reshape(expected.shape[0], -1, 2)
                 self.assertEqual(expert_scale.dtype, torch.float8_e8m0fnu)
                 torch.testing.assert_close(expert_scale.view(torch.uint8), expected, rtol=0, atol=0)
+        capture_tensor_inventory(layer)
+        captured = {id(t) for t in inventory_tensors(layer).values()}
         for name in (
             "cann_mega_moe_w13_weight_list",
             "cann_mega_moe_w2_weight_list",
             "cann_mega_moe_w13_weight_scale_list",
             "cann_mega_moe_w2_weight_scale_list",
         ):
-            for index, tensor in enumerate(getattr(layer, name)):
-                self.assertIs(layer.get_buffer(f"_snapshot_{name}_{index}"), tensor)
+            for tensor in getattr(layer, name):
+                self.assertIn(id(tensor), captured)
 
     @patch("vllm_ascend.quantization.methods.w4a4.w4a4_mxfp4.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w4a4.w4a4_mxfp4.use_cann_megamoe", return_value=False)
