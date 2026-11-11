@@ -144,9 +144,9 @@ def reset_modules_runtime_state(models: Iterable[nn.Module | None]) -> int:
     for item in _iter_modules_and_impls(models):
         # Cache storage belongs to the layer; its layout belongs to the backend.
         # Dispatch once per owning layer, not once per shared implementation.
-        restore_cache = getattr(getattr(item, "impl", None), "restore_cache_after_snapshot_restore", None)
-        if callable(restore_cache):
-            restore_cache(item)
+        restore_kv_cache = getattr(getattr(item, "impl", None), "restore_kv_cache_after_snapshot_restore", None)
+        if callable(restore_kv_cache):
+            restore_kv_cache(item)
         reset = getattr(item, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset):
             reset()

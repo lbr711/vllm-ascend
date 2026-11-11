@@ -1042,7 +1042,7 @@ MLA-DCP 的 super 调用同步移除：基础 MLA 不再需要重置 hook，DCP 
   `restore_constants_after_snapshot_restore` 恢复加载后分配的 Hadamard 常量。
   DSA v4.1 使用同一常量阶段重新绑定全局 RoPE；先清理请求/PCP 临时引用，再绑定常量。
   PCP 包装器负责其内部 builder，中央调度器不递归遍历私有对象。
-- C8 MXFP 的 `restore_cache_after_snapshot_restore(layer)` 由后端实现，负责从已恢复
+- C8 MXFP 的 `restore_kv_cache_after_snapshot_restore(layer)` 由后端实现，负责从已恢复
   参数填充 KV cache 的静态 V scale。中央模块调度器仅传入缓存所属 layer，不判断具体后端类型。
 - 通信组、native handle、编译缓存仍走原有生命周期；惰性派生缓存仍保留恢复 hook。
   此次没有把全部 runtime hook 改名，也没有把动态状态纳入权重文件。
