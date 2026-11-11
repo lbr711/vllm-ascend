@@ -1351,8 +1351,14 @@ def test_gqa_pcp_builder_rebinds_group_and_clears_batch_references():
 @pytest.mark.parametrize("optional_buffers", [False, True])
 def test_v41_builder_refills_metadata_and_rebinds_source_rope(optional_buffers):
     rope = (torch.ones(2), torch.zeros(2))
-    ns = {"Base": object, "get_full_cos_and_sin_dsa_for_layer": lambda name: rope}
-    load_nodes("attention/dsa_v41.py", ["AscendDSAV41MetadataBuilder"], ns, {HOOK, "prepare_source_rope"})
+    ns = {"Base": object, "torch": torch, "get_full_cos_and_sin_dsa_for_layer": lambda name: rope}
+    load_nodes(
+        "attention/dsa_v41.py",
+        ["AscendDSAV41MetadataBuilder"],
+        ns,
+        {HOOK, "prepare_source_rope", "restore_constants_after_snapshot_restore"},
+    )
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_metadata_builders"], ns)
     builder = ns["AscendDSAV41MetadataBuilder"]()
     neg_names = ("_slot_mapping", "_slot_mapping_2d", "_flat_slot_mapping")
     zero_names = (
@@ -1379,7 +1385,7 @@ def test_v41_builder_refills_metadata_and_rebinds_source_rope(optional_buffers):
     builder._c2_rope_layer_names = ["layer0"]
     builder._c2_full_source_rope = object()
     for _ in range(2):
-        getattr(builder, HOOK)()
+        ns["_reset_metadata_builders"]([builder, builder])
         for name in (*neg_names, *optional_neg):
             value = getattr(builder, name)
             assert value is None or torch.all(value == -1)
@@ -1392,8 +1398,20 @@ def test_v41_builder_refills_metadata_and_rebinds_source_rope(optional_buffers):
 
 
 def test_v41_pcp_rebuilds_rope_aliases_before_first_metadata_build():
-    ns = {"Base": type("Base", (), {HOOK: lambda self: self.prepare_source_rope()})}
+    constants_hook = "restore_constants_after_snapshot_restore"
+    ns = {
+        "torch": torch,
+        "Base": type(
+            "Base",
+            (),
+            {
+                HOOK: lambda self: None,
+                constants_hook: lambda self: self.prepare_source_rope(),
+            },
+        ),
+    }
     load_nodes("attention/context_parallel/dsa_v41_cp.py", ["AscendDSAV41PCPMetadataBuilder"], ns, {HOOK})
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_metadata_builders"], ns)
     builder = ns["AscendDSAV41PCPMetadataBuilder"]()
     builder._hidden_restore_idx_buffer = torch.ones(2, dtype=torch.int64)
     builder._pcp_rope_buffers = {"old": object()}
@@ -1405,7 +1423,7 @@ def test_v41_pcp_rebuilds_rope_aliases_before_first_metadata_build():
 
     builder.prepare_source_rope = Mock(side_effect=prepare)
     for _ in range(2):
-        getattr(builder, HOOK)()
+        ns["_reset_metadata_builders"]([builder])
         assert set(builder._pcp_rope_buffers) == {"fresh"}
 
 
@@ -1506,8 +1524,14 @@ def test_mla_base_refreshes_lazy_prolog():
     load_nodes("attention/mla_v1.py", ["AscendMLAImpl"], ns, {rebuild})
     impl = ns["AscendMLAImpl"]()
     impl._refresh_prolog_v3_weights = Mock()
+    impl._prolog_v3_weights = {"weight": torch.ones(2), "num_heads": 1}
     for _ in range(2):
         getattr(impl, rebuild)(torch.bfloat16)
+    assert impl._refresh_prolog_v3_weights.call_count == 2
+    getattr(impl, rebuild)(torch.bfloat16, restored_tensor_ids={id(impl._prolog_v3_weights["weight"])})
+    assert impl._refresh_prolog_v3_weights.call_count == 2
+    impl._prolog_v3_weights = None
+    getattr(impl, rebuild)(torch.bfloat16)
     assert impl._refresh_prolog_v3_weights.call_count == 2
 
 
@@ -1537,6 +1561,57 @@ def test_dsa_builder_invalidates_turboquant_geometry():
     assert builder.tq_group_block_sizes is None
 
 
+@pytest.mark.parametrize(
+    "source, name",
+    [
+        ("attention/dsa_v1.py", "AscendDSAMetadataBuilder"),
+        ("attention/context_parallel/dsa_cp.py", "AscendDSACPMetadataBuilder"),
+    ],
+)
+def test_builder_constants_restore_in_place_once(source, name, monkeypatch):
+    hook = "restore_constants_after_snapshot_restore"
+    ns = {"Base": object, "torch": torch}
+    load_nodes(source, [name], ns, {hook})
+    load_nodes("snapshot/model_runner_lifecycle/restore.py", ["_reset_metadata_builders"], ns)
+    scipy_linalg = ModuleType("scipy.linalg")
+    scipy_linalg.hadamard = Mock(return_value=np.array([[1.0, 1.0], [1.0, -1.0]]))
+    monkeypatch.setitem(sys.modules, "scipy.linalg", scipy_linalg)
+    builder = ns[name]()
+    builder.device = torch.device("cpu")
+    with torch.inference_mode():
+        builder.hadamard = torch.zeros((2, 2), dtype=torch.bfloat16)
+    original = builder.hadamard
+    events = []
+    setattr(builder, HOOK, lambda: events.append("reset"))
+    for _ in range(2):
+        ns["_reset_metadata_builders"]([builder, builder])
+        assert builder.hadamard is original
+        torch.testing.assert_close(original, torch.tensor([[1.0, 1.0], [1.0, -1.0]], dtype=torch.bfloat16))
+    assert events == ["reset", "reset"]
+    assert scipy_linalg.hadamard.call_count == 2
+    builder.hadamard = None
+    ns["_reset_metadata_builders"]([builder])
+    assert scipy_linalg.hadamard.call_count == 2
+
+
+def test_sfa_reset_keeps_inventory_owned_clip_alpha():
+    preprocess = SimpleNamespace(PROLOG_V3=object())
+    ns = {"Base": object, "torch": torch, "PreprocessType": preprocess}
+    load_nodes("attention/sfa_v1.py", ["AscendSFAImpl"], ns, {HOOK})
+    impl = ns["AscendSFAImpl"]()
+    impl.topk_indices_buffer = None
+    impl.turboquant = None
+    impl.preprocess_type = preprocess.PROLOG_V3
+    impl.enable_sparse_sfa_c8 = True
+    impl.weight_dq = torch.ones(2)
+    impl.sfa_qsfa_k_nope_clip_alpha = torch.ones(1)
+    original = impl.sfa_qsfa_k_nope_clip_alpha
+    for _ in range(2):
+        getattr(impl, HOOK)()
+        assert impl.sfa_qsfa_k_nope_clip_alpha is original
+        assert impl.sfa_qsfa_kr_cache_dummy.numel() == 0
+
+
 def test_dsa_impl_restores_turboquant_only_when_present():
     ns = {"Base": object}
     load_nodes("attention/dsa_v1.py", ["AscendDSAImpl"], ns, {HOOK})
@@ -1551,10 +1626,17 @@ def test_dsa_impl_restores_turboquant_only_when_present():
 def test_module_dispatch_refills_mxfp_scale_cache_once(monkeypatch):
     path = "vllm_ascend.attention.attention_c8_mxfp"
     backend = ModuleType(path)
-    backend.AscendC8MXFPAttentionBackendImpl = type("Impl", (), {})
     fill_ns = {"torch": torch}
     load_nodes("attention/attention_c8_mxfp.py", ["fill_mxfp_v_scale_cache"], fill_ns)
     backend.fill_mxfp_v_scale_cache = Mock(wraps=fill_ns["fill_mxfp_v_scale_cache"])
+    impl_ns = {"Base": object, "fill_mxfp_v_scale_cache": backend.fill_mxfp_v_scale_cache}
+    load_nodes(
+        "attention/attention_c8_mxfp.py",
+        ["AscendC8MXFPAttentionBackendImpl"],
+        impl_ns,
+        {"restore_cache_after_snapshot_restore"},
+    )
+    backend.AscendC8MXFPAttentionBackendImpl = impl_ns["AscendC8MXFPAttentionBackendImpl"]
     monkeypatch.setitem(sys.modules, path, backend)
     ns = {"torch": torch, "nn": torch.nn, "Iterable": Iterable, "Iterator": Iterator}
     load_nodes(

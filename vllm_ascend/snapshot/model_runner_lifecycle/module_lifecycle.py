@@ -140,17 +140,13 @@ def reset_modules_runtime_state(models: Iterable[nn.Module | None]) -> int:
     Shared objects are reset only once. Lazy buffers created in an inference
     forward must also be updated under inference mode during restore.
     """
-    from vllm_ascend.attention.attention_c8_mxfp import (
-        AscendC8MXFPAttentionBackendImpl,
-        fill_mxfp_v_scale_cache,
-    )
-
     reset_count = 0
     for item in _iter_modules_and_impls(models):
-        if isinstance(getattr(item, "impl", None), AscendC8MXFPAttentionBackendImpl):
-            # Static V scales live in cache storage, outside the checkpoint.
-            # The source parameter has already been restored on target/draft.
-            fill_mxfp_v_scale_cache(item.v_cache_scale, item.kv_cache[3])
+        # Cache storage belongs to the layer; its layout belongs to the backend.
+        # Dispatch once per owning layer, not once per shared implementation.
+        restore_cache = getattr(getattr(item, "impl", None), "restore_cache_after_snapshot_restore", None)
+        if callable(restore_cache):
+            restore_cache(item)
         reset = getattr(item, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset):
             reset()
@@ -163,9 +159,18 @@ def rebuild_model_derived_tensors_after_snapshot_restore(
     act_dtype: torch.dtype,
     label: str,
 ) -> None:
-    """Rebuild non-persistent derived tensors through model module hooks."""
+    """Rebuild derived state not already restored by the checkpoint."""
+    restored_tensor_ids = {id(t) for t in model.parameters()}
+    for module in model.modules():
+        restored_tensor_ids.update(
+            id(t) for name, t in module._buffers.items() if name not in module._non_persistent_buffers_set
+        )
+    if hasattr(model, "_snapshot_tensor_paths"):
+        from vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory import inventory_tensors
+
+        restored_tensor_ids.update(id(t) for t in inventory_tensors(model).values())
     for item in _iter_modules_and_impls((model,)):
         rebuild = getattr(item, "rebuild_derived_tensors_after_snapshot_restore", None)
         if not callable(rebuild):
             continue
-        rebuild(act_dtype)
+        rebuild(act_dtype, restored_tensor_ids=restored_tensor_ids)

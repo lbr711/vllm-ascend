@@ -205,6 +205,9 @@ def _reset_metadata_builders(builders) -> None:
         reset_state = getattr(builder_or_mask, "reset_runtime_state_after_snapshot_restore", None)
         if callable(reset_state):
             reset_state()
+        restore_constants = getattr(builder_or_mask, "restore_constants_after_snapshot_restore", None)
+        if callable(restore_constants):
+            restore_constants()
 
 
 @torch.inference_mode()

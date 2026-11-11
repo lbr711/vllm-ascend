@@ -395,6 +395,9 @@ class AscendDSACPMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             if tensors is not None:
                 for tensor in tensors:
                     tensor.zero_()
+
+    def restore_constants_after_snapshot_restore(self) -> None:
+        """Restore builder-owned constants allocated after model inventory capture."""
         if self.hadamard is not None:
             from scipy.linalg import hadamard  # type: ignore[import-untyped]
 
@@ -2296,6 +2299,10 @@ class AscendDSAPCPMetadataBuilder(dsa_v1.AscendDSAMetadataBuilder):
     def reset_runtime_state_after_snapshot_restore(self) -> None:
         super().reset_runtime_state_after_snapshot_restore()
         self._global_metadata_builder.reset_runtime_state_after_snapshot_restore()
+
+    def restore_constants_after_snapshot_restore(self) -> None:
+        super().restore_constants_after_snapshot_restore()
+        self._global_metadata_builder.restore_constants_after_snapshot_restore()
 
     def __init__(
         self,

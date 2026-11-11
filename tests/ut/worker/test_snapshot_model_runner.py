@@ -35,7 +35,7 @@ class _BackendSpecificReloadTarget:
         self.reloaded = False
         self.runtime_reset = False
 
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype, *, restored_tensor_ids) -> None:
         self.reloaded = True
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
@@ -49,7 +49,7 @@ class _ImplHolder(torch.nn.Module):
 
 
 class _FailingReloadTarget:
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype, *, restored_tensor_ids) -> None:
         raise RuntimeError("restore failed")
 
 

@@ -376,7 +376,9 @@ class ComplexExpRotaryEmbedding(nn.Module):
                     ]
                     _ROPE_STATE.spec_runtime_buffer[config_key][grp] = (buf_cos, buf_sin)
 
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(
+        self, act_dtype: torch.dtype, *, restored_tensor_ids: set[int] | frozenset[int] = frozenset()
+    ) -> None:
         """Rebuild the module-level RoPE cache after restore."""
         self._build_cos_sin_cache(force=True)
         self.full_rope_cos, self.full_rope_sin = _ROPE_STATE.full_rope_cache[self._config_key]

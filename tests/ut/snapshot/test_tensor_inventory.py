@@ -9,6 +9,7 @@ import importlib.util
 import os
 import sys
 import time
+from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,39 @@ SPEC = importlib.util.spec_from_file_location(
 )
 inventory = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(inventory)
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_prolog_rebuild_only_for_uncaptured_tensors(captured, monkeypatch):
+    monkeypatch.setitem(sys.modules, "vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory", inventory)
+    ns = {"torch": torch, "nn": torch.nn, "Iterable": Iterable, "Iterator": Iterator}
+    source = ROOT / "vllm_ascend/attention/mla_v1.py"
+    tree = ast.parse(source.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AscendMLAImpl")
+    cls.bases = []
+    cls.decorator_list = []
+    cls.body = [n for n in cls.body if getattr(n, "name", "") == "rebuild_derived_tensors_after_snapshot_restore"]
+    tree.body = [cls]
+    exec(compile(tree, str(source), "exec"), ns)
+    source = ROOT / "vllm_ascend/snapshot/model_runner_lifecycle/module_lifecycle.py"
+    tree = ast.parse(source.read_text())
+    tree.body = [
+        n
+        for n in tree.body
+        if getattr(n, "name", "") in ("_iter_modules_and_impls", "rebuild_model_derived_tensors_after_snapshot_restore")
+    ]
+    exec(compile(tree, str(source), "exec"), ns)
+    model = torch.nn.Module()
+    model.impl = ns["AscendMLAImpl"]()
+    impl = model.impl
+    impl._prolog_v3_weights = {"weight": torch.ones(2), "num_heads": 1} if captured else None
+    inventory.capture_tensor_inventory(model)
+    if not captured:
+        impl._prolog_v3_weights = {"weight": torch.ones(2), "num_heads": 1}
+    impl._refresh_prolog_v3_weights = Mock()
+    for _ in range(2):
+        ns["rebuild_model_derived_tensors_after_snapshot_restore"](model, torch.bfloat16, "target")
+    assert impl._refresh_prolog_v3_weights.call_count == (0 if captured else 2)
 
 
 def model_with_tensors():

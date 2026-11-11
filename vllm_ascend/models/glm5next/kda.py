@@ -283,10 +283,12 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         return torch.cat(weights, dim=0).transpose(0, 1).to(dtype=dtype).contiguous()
 
     @torch.inference_mode()
-    def rebuild_derived_tensors_after_snapshot_restore(self, _act_dtype: torch.dtype) -> None:
+    def rebuild_derived_tensors_after_snapshot_restore(
+        self, _act_dtype: torch.dtype, *, restored_tensor_ids: set[int] | frozenset[int] = frozenset()
+    ) -> None:
         # This lazy copy is not in state_dict. Source Parameters have already
         # been restored; preserve the cached storage before graph recapture.
-        if self._merged_conv_weight is not None:
+        if self._merged_conv_weight is not None and id(self._merged_conv_weight) not in restored_tensor_ids:
             self._merged_conv_weight.copy_(self._build_merged_conv_weight(self._merged_conv_weight.dtype))
 
     def forward(
