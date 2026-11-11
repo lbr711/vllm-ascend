@@ -11,8 +11,8 @@ from vllm_ascend.ops.rotary_embedding import reload_cos_and_sin_after_restore
 from vllm_ascend.snapshot.model_runner_lifecycle.checkpoint import model_checkpoint_path
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     get_drafter_model,
-    rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
+    restore_model_non_checkpoint_state,
     restore_state_dict,
 )
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _restore_model_checkpoint(runner, model: nn.Module, model_save_path: str, label: str) -> None:
     restore_state_dict(model, model_save_path, label)
-    rebuild_model_derived_tensors_after_snapshot_restore(model, runner.model_config.dtype, label)
+    restore_model_non_checkpoint_state(model, runner.model_config.dtype, label)
 
 
 def restore_model_runner(runner, path: str = "/mnt") -> None:
@@ -401,8 +401,8 @@ def _reset_v1_block_tables(runner) -> None:
 def _reset_target_and_drafter_modules_after_restore(runner) -> None:
     """Reset reusable runtime state owned by target and drafter modules.
 
-    Modules refresh their own state and forward the hook to backend
-    implementations they own.
+    The module lifecycle dispatcher visits modules and their implementations;
+    modules must not forward the same hook to their impl again.
     """
     reset_modules_runtime_state((runner.get_model(), get_drafter_model(runner)))
 

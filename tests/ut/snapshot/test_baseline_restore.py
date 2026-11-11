@@ -123,7 +123,7 @@ def test_dflash_restore_keeps_inference_mode_after_super():
 
 @pytest.mark.parametrize("initialized", [False, True])
 def test_glm5next_merged_conv_snapshot_restore(initialized):
-    rebuild = "rebuild_derived_tensors_after_snapshot_restore"
+    rebuild = "restore_lazy_tensors_after_snapshot_restore"
     ns = {"torch": torch, "Base": torch.nn.Module}
     load_nodes(
         "models/glm5next/kda.py",
@@ -151,11 +151,11 @@ def test_glm5next_merged_conv_snapshot_restore(initialized):
     dispatch = {"nn": torch.nn, "torch": torch, "Iterable": Iterable, "Iterator": Iterator}
     load_nodes(
         "snapshot/model_runner_lifecycle/module_lifecycle.py",
-        ["_iter_modules_and_impls", "rebuild_model_derived_tensors_after_snapshot_restore"],
+        ["_iter_modules_and_impls", "restore_model_non_checkpoint_state"],
         dispatch,
     )
     for _ in range(2):
-        dispatch["rebuild_model_derived_tensors_after_snapshot_restore"](layer, torch.bfloat16, "target")
+        dispatch["restore_model_non_checkpoint_state"](layer, torch.bfloat16, "target")
         if initialized:
             torch.testing.assert_close(layer._merged_conv_weight, expected)
             assert layer._merged_conv_weight.data_ptr() == pointer
@@ -937,7 +937,7 @@ def test_pp_target_and_last_stage_drafter_checkpoint_roundtrip(tmp_path, last):
             "get_pp_group": lambda: SimpleNamespace(rank_in_group=int(last)),
             "get_drafter_model": lambda runner: draft,
             "_restore_model_runner_runtime_state": Mock(),
-            "rebuild_model_derived_tensors_after_snapshot_restore": Mock(),
+            "restore_model_non_checkpoint_state": Mock(),
         }
     )
     load_nodes("snapshot/model_runner_lifecycle/checkpoint.py", ["model_checkpoint_path", "dump_model_runner"], ns)
@@ -1262,7 +1262,7 @@ def test_turboquant_restore_preserves_contents_and_addresses(legacy):
     }
     load_nodes(str(path.relative_to(ROOT)), ["TurboQuantLatent", "_get_legacy_transforms"], ns)
     latent = ns["TurboQuantLatent"](legacy_hadamard=legacy)
-    getattr(latent, HOOK)()
+    latent.restore_constants_after_snapshot_restore()
     assert latent.rotation is None
     latent._initialize(torch.device("cpu"))
     names = ("rotation", "centroids", "norm_lut") + (("inverse_rotation",) if legacy else ())
@@ -1273,7 +1273,7 @@ def test_turboquant_restore_preserves_contents_and_addresses(legacy):
     for _ in range(2):
         for name in names:
             getattr(latent, name).fill_(42)
-        getattr(latent, HOOK)()
+        latent.restore_constants_after_snapshot_restore()
         for name in names:
             torch.testing.assert_close(getattr(latent, name), original[name], rtol=0, atol=0)
             assert getattr(latent, name).data_ptr() == addresses[name]
@@ -1325,15 +1325,16 @@ def test_indexer_inventory_restores_hadamard_for_both_quantization_paths(c8, c4)
 @pytest.mark.parametrize("enabled", [False, True])
 def test_sfa_restores_nested_turboquant_helper(enabled):
     ns = {"Base": object, "PreprocessType": SimpleNamespace(PROLOG_V3=object())}
-    load_nodes("attention/sfa_v1.py", ["AscendSFAImpl"], ns, {HOOK})
+    load_nodes("attention/sfa_v1.py", ["AscendSFAImpl"], ns, {HOOK, "restore_constants_after_snapshot_restore"})
     impl = ns["AscendSFAImpl"]()
     impl.topk_indices_buffer = torch.zeros(2, dtype=torch.int32)
     impl.turboquant = Mock() if enabled else None
     impl.preprocess_type = None
     getattr(impl, HOOK)()
+    impl.restore_constants_after_snapshot_restore()
     assert torch.all(impl.topk_indices_buffer == -1)
     if enabled:
-        impl.turboquant.reset_runtime_state_after_snapshot_restore.assert_called_once()
+        impl.turboquant.restore_constants_after_snapshot_restore.assert_called_once()
 
 
 def test_gqa_pcp_builder_rebinds_group_and_clears_batch_references():
@@ -1469,7 +1470,7 @@ def test_pcp_weight_switch_rebinds_group_and_rebuilds_copies(enabled, initialize
     states = [Mock(), Mock()]
     impl._pcp_o_proj_weight_switches = [(None, None, state) for state in states] if initialized else None
     getattr(impl, HOOK)()
-    base_reset.assert_called_once()
+    base_reset.assert_not_called()  # Base DSA constants have a separate dispatcher.
     assert impl._pcp_o_proj_use_full_weight is False
     if enabled:
         from_group.assert_called_once_with(group)
@@ -1497,8 +1498,9 @@ def test_pcp_builder_resets_nested_global_builder():
 @pytest.mark.parametrize("initialized", [False, True])
 def test_mla_current_kv_index_constant_restored_in_place(initialized):
     base_reset = Mock()
-    ns = {"Base": type("Base", (), {HOOK: lambda self: base_reset()}), "torch": torch}
-    load_nodes("attention/context_parallel/mla_cp.py", ["AscendMlaDCPImpl"], ns, {HOOK})
+    lazy = "restore_lazy_tensors_after_snapshot_restore"
+    ns = {"Base": type("Base", (), {lazy: lambda self, *args, **kwargs: base_reset()}), "torch": torch}
+    load_nodes("attention/context_parallel/mla_cp.py", ["AscendMlaDCPImpl"], ns, {HOOK, lazy})
     impl = ns["AscendMlaDCPImpl"]()
     impl._refresh_dcp_group = Mock()
     indices = torch.full((8,), 123, dtype=torch.int64)
@@ -1509,17 +1511,22 @@ def test_mla_current_kv_index_constant_restored_in_place(initialized):
     impl._dcp_prefill_current_kv_buffers = (scratch, scratch, prefill_indices) if initialized else None
     for _ in range(2):
         getattr(impl, HOOK)()
+        getattr(impl, lazy)(torch.bfloat16)
         if initialized:
             torch.testing.assert_close(indices, torch.arange(8))
             assert indices.data_ptr() == address
             torch.testing.assert_close(prefill_indices, torch.arange(16))
         assert (scratch == 456).all()  # Overwritten by prolog, not a constant.
     assert impl._refresh_dcp_group.call_count == 2
-    base_reset.assert_not_called()  # Base MLA load-time tensors use the inventory.
+    assert base_reset.call_count == 2  # Keep inherited lazy PROLOG restoration.
+    if initialized:
+        indices.fill_(99)
+        getattr(impl, lazy)(torch.bfloat16, restored_tensor_ids={id(indices)})
+        assert torch.all(indices == 99)  # Inventory-owned contents are not overwritten.
 
 
 def test_mla_base_refreshes_lazy_prolog():
-    rebuild = "rebuild_derived_tensors_after_snapshot_restore"
+    rebuild = "restore_lazy_tensors_after_snapshot_restore"
     ns = {"Base": object, "torch": torch}
     load_nodes("attention/mla_v1.py", ["AscendMLAImpl"], ns, {rebuild})
     impl = ns["AscendMLAImpl"]()
@@ -1614,13 +1621,31 @@ def test_sfa_reset_keeps_inventory_owned_clip_alpha():
 
 def test_dsa_impl_restores_turboquant_only_when_present():
     ns = {"Base": object}
-    load_nodes("attention/dsa_v1.py", ["AscendDSAImpl"], ns, {HOOK})
+    constants = "restore_constants_after_snapshot_restore"
+    load_nodes("attention/dsa_v1.py", ["AscendDSAImpl"], ns, {constants})
     impl = ns["AscendDSAImpl"]()
     impl.turboquant = Mock()
-    getattr(impl, HOOK)()
-    impl.turboquant.reset_runtime_state_after_snapshot_restore.assert_called_once()
+    getattr(impl, constants)()
+    impl.turboquant.restore_constants_after_snapshot_restore.assert_called_once()
     impl.turboquant = None
-    getattr(impl, HOOK)()
+    getattr(impl, constants)()
+
+
+def test_runtime_dispatch_resets_once_without_restoring_constants():
+    ns = {"torch": torch, "nn": torch.nn, "Iterable": Iterable, "Iterator": Iterator}
+    load_nodes(
+        "snapshot/model_runner_lifecycle/module_lifecycle.py",
+        ["_iter_modules_and_impls", "reset_modules_runtime_state"],
+        ns,
+    )
+    events = []
+    model = torch.nn.Module()
+    model.impl = SimpleNamespace(
+        reset_runtime_state_after_snapshot_restore=lambda: events.append("reset"),
+        restore_constants_after_snapshot_restore=lambda: events.append("unexpected_constants"),
+    )
+    ns["reset_modules_runtime_state"]((model, model))
+    assert events == ["reset"]
 
 
 def test_module_dispatch_refills_mxfp_scale_cache_once(monkeypatch):

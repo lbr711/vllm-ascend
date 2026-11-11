@@ -411,10 +411,12 @@ nn.Module
 └── module.impl
 ```
 
-扫描过程中按顺序调用两个 vLLM-Ascend 私有 hook：
+checkpoint 恢复后，按对象分派常量和惰性 tensor 的私有 hook；
+随后运行态阶段清理请求状态：
 
 ```python
-rebuild_derived_tensors_after_snapshot_restore(...)
+restore_constants_after_snapshot_restore()
+restore_lazy_tensors_after_snapshot_restore(..., restored_tensor_ids=...)
 reset_runtime_state_after_snapshot_restore()
 ```
 
@@ -424,15 +426,29 @@ reset_runtime_state_after_snapshot_restore()
 - Module 不需要手工转发其 impl 的 hook；
 - 共享对象通过对象 ID 去重，同一 hook 只执行一次。
 
+DSV4 RoPE 的全局 cos/sin 与模块非持久化 buffer 共享对象，由 inventory 原位恢复，
+不再增加模块 constants hook；MLA PROLOG、KDA merged convolution 归 lazy tensors，
+已由 checkpoint 覆盖的 tensor 不重复重建。
+不保留旧 derived hook 的兼容别名或 fallback。Builder 的 constants hook
+仍在 builder 请求状态清理后执行，保持原有的 RoPE 依赖顺序。
+
+TurboQuant helper 的变换矩阵、码本和 norm LUT 由所属 DSA/SFA 的 constants
+hook 转发恢复，不再混在请求清理中。SFA 空 KV 占位 tensor 由
+`reset_runtime_state_after_snapshot_restore` 准备，不单独引入缓冲准备钩子。
+MLA-DCP 的索引属于可能在加载后创建的固定 tensor，在 lazy hook 中仅恢复
+checkpoint 尚未覆盖的对象；该 hook 同时保留父类 PROLOG 恢复。
+模块 runtime 调度目前仍包含通信引用刷新和 backend cache 填充，不能将
+整个入口理解成“只清理请求数据”；通信 mixin 的原有调用顺序未改动。
+
 #### 4.3.5 restore.py
 
 `restore_model_runner()` 汇总模型和 ModelRunner 的恢复流程：
 
 ```text
 恢复 Target state_dict
-→ 重建 Target 派生 Tensor
+→ 恢复 Target 常量与未被 checkpoint 覆盖的惰性 Tensor
 → 恢复 Drafter state_dict
-→ 重建 Drafter 派生 Tensor
+→ 恢复 Drafter 常量与未被 checkpoint 覆盖的惰性 Tensor
 → 恢复模块级全局 Tensor
 → 清理投机解码请求残留
 → 恢复 Drafter 可复用 buffer
@@ -1015,8 +1031,9 @@ checkpoint 沿用原来的 `.pth` 文件名，不增加版本后缀。新容器�
 
 MLA-DCP 的 super 调用同步移除：基础 MLA 不再需要重置 hook，DCP 自身仍刷新
 通信组和后续阶段分配的索引。DSA/CP metadata builder 不属于模型加载期枚举
-对象，其请求清理 hook 保留。RoPE 全局状态、TurboQuant helper、惰性 PROLOG/KDA
-缓存也不由此次枚举完整覆盖，不能直接删除其恢复逻辑。
+对象，其请求清理 hook 保留。TurboQuant helper、惰性 PROLOG/KDA 缓存不由此次
+枚举完整覆盖，不能直接删除其恢复逻辑。DSV4 的完整 RoPE 表则通过基线注册的
+非持久化 buffer 纳入 inventory，与全局表共享的对象和地址均保持不变。
 
 ### Builder 与后端恢复的职责边界
 
@@ -1033,8 +1050,13 @@ MLA-DCP 的 super 调用同步移除：基础 MLA 不再需要重置 hook，DCP 
 派生恢复调度传递 checkpoint 已覆盖的 tensor 对象 ID，MLA PROLOG 投影仅在存在
 未覆盖 tensor 时重建；加载期已记录的投影不再重复计算。KDA 使用同样的覆盖判断，
 加载后惰性生成的 merged convolution 仍需重建。SFA 的 clip_alpha 只由 inventory
-原位恢复，不再在 runtime hook 中重新分配。全局 RoPE、TurboQuant helper、空 cache
-占位符和请求元数据不因此删除：它们并不由模型 inventory 完整负责。
+原位恢复，不再在 runtime hook 中重新分配。TurboQuant helper、空 cache 占位符
+和请求元数据不因此删除：它们并不由模型 inventory 完整负责。
+
+`rope_dsv4.py` 回归 v0.30.0 基线实现：移除快照专用重算函数、首行数值有效性探测、
+重建参数副本和额外 device 参数。完整 cos/sin 表只通过 inventory 恢复；运行期
+按位置 gather 的 scratch buffer 保持基线的消费前写入逻辑。Builder 的外部 RoPE
+引用重绑定继续保留，独立于完整表的原位恢复。
 
 ```text
 Motor

@@ -90,7 +90,7 @@ class TurboQuantLatent:
         self.norm_lut = torch.tensor(cent[codes & 15] ** 2 + cent[codes >> 4] ** 2, device=device)
 
     @torch.inference_mode()
-    def reset_runtime_state_after_snapshot_restore(self) -> None:
+    def restore_constants_after_snapshot_restore(self) -> None:
         if self.rotation is None:
             return
         # These constants are owned by a plain helper, not the model state_dict.

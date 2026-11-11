@@ -6,6 +6,7 @@ import ctypes
 import fcntl
 import gc
 import importlib.util
+import math
 import os
 import sys
 import time
@@ -26,6 +27,56 @@ inventory = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(inventory)
 
 
+@pytest.mark.parametrize("apply_yarn", [False, True])
+def test_rope_inventory_restores_shared_global_tables(tmp_path, monkeypatch, apply_yarn):
+    # Execute the real constructor and frequency calculation without NPU imports.
+    source = ROOT / "vllm_ascend/ops/rope_dsv4.py"
+    tree = ast.parse(source.read_text())
+    tree.body = [
+        node
+        for node in tree.body
+        if getattr(node, "name", "")
+        in ("RopeGlobalState", "ComplexExpRotaryEmbedding", "get_full_cos_and_sin_dsa_for_layer")
+    ]
+    ns = {
+        "torch": torch,
+        "nn": torch.nn,
+        "math": math,
+        "VllmConfig": object,
+        "current_platform": SimpleNamespace(device_type="cpu"),
+    }
+    exec(compile(tree, str(source), "exec"), ns)
+    state = ns["_ROPE_STATE"] = ns["RopeGlobalState"]()
+    config = SimpleNamespace(scheduler_config=SimpleNamespace(max_num_batched_tokens=8), speculative_config=None)
+    model = torch.nn.ModuleList(
+        [
+            ns["ComplexExpRotaryEmbedding"](config, f"layer{i}", 8, 8, 16, 10000, 2, apply_yarn_scaling=apply_yarn)
+            for i in range(2)
+        ]
+    )
+    key = state.layer_info["layer0"][0]
+    pair = state.full_rope_cache[key]
+    expected = tuple(t.clone() for t in pair)
+    addresses = tuple(t.data_ptr() for t in pair)
+    assert not model.state_dict()  # Baseline buffers are nonpersistent.
+    inventory.capture_tensor_inventory(model)
+    namespace, _ = checkpoint_namespace(monkeypatch)
+    path = str(tmp_path / "rope.pth")
+    namespace["dump_state_dict"](model, path)
+    assert len(inventory.inventory_state(model)["tensors"]) == 2
+    for _ in range(2):
+        for tensor in pair:
+            tensor.fill_(42)
+        namespace["restore_state_dict"](model, path, "rope")
+        for index, name in enumerate(("full_rope_cos", "full_rope_sin")):
+            torch.testing.assert_close(pair[index], expected[index], rtol=0, atol=0)
+            assert pair[index].data_ptr() == addresses[index]
+            assert all(getattr(layer, name) is pair[index] for layer in model)
+            assert ns["get_full_cos_and_sin_dsa_for_layer"]("layer1")[index] is pair[index]
+        assert state.full_rope_cache[key] is pair
+    assert not hasattr(model[0], "restore_constants_after_snapshot_restore")
+
+
 @pytest.mark.parametrize("captured", [False, True])
 def test_prolog_rebuild_only_for_uncaptured_tensors(captured, monkeypatch):
     monkeypatch.setitem(sys.modules, "vllm_ascend.snapshot.model_runner_lifecycle.tensor_inventory", inventory)
@@ -35,7 +86,7 @@ def test_prolog_rebuild_only_for_uncaptured_tensors(captured, monkeypatch):
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AscendMLAImpl")
     cls.bases = []
     cls.decorator_list = []
-    cls.body = [n for n in cls.body if getattr(n, "name", "") == "rebuild_derived_tensors_after_snapshot_restore"]
+    cls.body = [n for n in cls.body if getattr(n, "name", "") == "restore_lazy_tensors_after_snapshot_restore"]
     tree.body = [cls]
     exec(compile(tree, str(source), "exec"), ns)
     source = ROOT / "vllm_ascend/snapshot/model_runner_lifecycle/module_lifecycle.py"
@@ -43,7 +94,7 @@ def test_prolog_rebuild_only_for_uncaptured_tensors(captured, monkeypatch):
     tree.body = [
         n
         for n in tree.body
-        if getattr(n, "name", "") in ("_iter_modules_and_impls", "rebuild_model_derived_tensors_after_snapshot_restore")
+        if getattr(n, "name", "") in ("_iter_modules_and_impls", "restore_model_non_checkpoint_state")
     ]
     exec(compile(tree, str(source), "exec"), ns)
     model = torch.nn.Module()
@@ -55,7 +106,7 @@ def test_prolog_rebuild_only_for_uncaptured_tensors(captured, monkeypatch):
         impl._prolog_v3_weights = {"weight": torch.ones(2), "num_heads": 1}
     impl._refresh_prolog_v3_weights = Mock()
     for _ in range(2):
-        ns["rebuild_model_derived_tensors_after_snapshot_restore"](model, torch.bfloat16, "target")
+        ns["restore_model_non_checkpoint_state"](model, torch.bfloat16, "target")
     assert impl._refresh_prolog_v3_weights.call_count == (0 if captured else 2)
 
 
@@ -271,8 +322,8 @@ def test_inventory_replaces_removed_model_hooks(tmp_path, monkeypatch, kind):
     "file,cls,method",
     [
         ("ops/layernorm.py", "AscendRMSNorm", "reset_runtime_state_after_snapshot_restore"),
-        ("attention/indexer.py", "AscendSFAIndexerBackend", "rebuild_derived_tensors_after_snapshot_restore"),
-        ("attention/indexer_kpool.py", "Glm5NextKPoolIndexerBackend", "rebuild_derived_tensors_after_snapshot_restore"),
+        ("attention/indexer.py", "AscendSFAIndexerBackend", "restore_lazy_tensors_after_snapshot_restore"),
+        ("attention/indexer_kpool.py", "Glm5NextKPoolIndexerBackend", "restore_lazy_tensors_after_snapshot_restore"),
         ("attention/mla_v1.py", "AscendMLAImpl", "reset_runtime_state_after_snapshot_restore"),
         ("attention/mla_v1.py", "AscendMLAImpl", "_persist_snapshot_derived_tensors"),
         ("attention/sfa_v1.py", "AscendSFAImpl", "_persist_snapshot_derived_tensors"),

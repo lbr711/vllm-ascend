@@ -7,8 +7,8 @@ import torch
 from vllm_ascend.snapshot.model_runner_lifecycle.checkpoint import dump_model_runner
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     get_drafter_model,
-    rebuild_model_derived_tensors_after_snapshot_restore,
     reset_modules_runtime_state,
+    restore_model_non_checkpoint_state,
 )
 from vllm_ascend.snapshot.model_runner_lifecycle.restore import (
     _rebuild_v1_native_resources,
@@ -35,7 +35,7 @@ class _BackendSpecificReloadTarget:
         self.reloaded = False
         self.runtime_reset = False
 
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype, *, restored_tensor_ids) -> None:
+    def restore_lazy_tensors_after_snapshot_restore(self, act_dtype: torch.dtype, *, restored_tensor_ids) -> None:
         self.reloaded = True
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
@@ -49,7 +49,7 @@ class _ImplHolder(torch.nn.Module):
 
 
 class _FailingReloadTarget:
-    def rebuild_derived_tensors_after_snapshot_restore(self, act_dtype: torch.dtype, *, restored_tensor_ids) -> None:
+    def restore_lazy_tensors_after_snapshot_restore(self, act_dtype: torch.dtype, *, restored_tensor_ids) -> None:
         raise RuntimeError("restore failed")
 
 
@@ -279,7 +279,7 @@ def test_reset_target_and_drafter_modules_after_restore():
 def test_reload_derived_weights_uses_backend_specific_hook():
     target = _BackendSpecificReloadTarget()
 
-    rebuild_model_derived_tensors_after_snapshot_restore(_ImplHolder(target), torch.bfloat16, "model")
+    restore_model_non_checkpoint_state(_ImplHolder(target), torch.bfloat16, "model")
 
     assert target.reloaded
 
@@ -298,7 +298,7 @@ def test_module_lifecycle_dispatches_module_before_impl():
 
 def test_reload_derived_weights_propagates_failure():
     with pytest.raises(RuntimeError, match="restore failed"):
-        rebuild_model_derived_tensors_after_snapshot_restore(
+        restore_model_non_checkpoint_state(
             _ImplHolder(_FailingReloadTarget()),
             torch.bfloat16,
             "model",

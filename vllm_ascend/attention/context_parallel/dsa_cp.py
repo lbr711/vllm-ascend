@@ -2650,7 +2650,6 @@ class AscendDSAPCPImpl(dsa_v1.AscendDSAImpl):
     o_proj_full_pools: ClassVar[dict[Any, torch.Tensor]] = {}
 
     def reset_runtime_state_after_snapshot_restore(self) -> None:
-        super().reset_runtime_state_after_snapshot_restore()
         self._pcp_o_proj_use_full_weight = False
         if self.enable_pcp_o_proj_weight_sharding:
             self.pcp_o_proj_weight_switch_config = WeightSwitchConfig.from_group(get_pcp_group())
