@@ -1357,6 +1357,44 @@ class TestMemcacheDPInitBarrier(unittest.TestCase):
         self.store.init.assert_called_once()
         self.barrier.assert_called_once()
 
+    def test_snapshot_restore_closes_before_reinit_and_registers_buffers(self):
+        backend = self.make_backend(dp_size=1)
+        backend.register_buffer([4096], [8192])
+        self.store.reset_mock()
+
+        backend.prepare_for_snapshot_restore()
+        backend.prepare_for_snapshot_restore()
+        self.store.close.assert_called_once_with()
+        self.assertIsNone(backend.store)
+
+        backend.reset_after_snapshot("10.0.0.8")
+        self.assertEqual(
+            self.store.mock_calls,
+            [call.close(), call.init(0, init_bm=True), call.register_buffer(4096, 8192)],
+        )
+        self.assertTrue(backend._store_initialized)
+        self.assertIsNone(backend._store_was_initialized)
+
+    def test_snapshot_restore_preserves_uninitialized_lazy_store(self):
+        with patch.object(memcache_module, "_is_device_sdma", return_value=True):
+            backend = self.make_backend(lazy_init=True)
+        backend.register_buffer([4096], [8192])
+        backend.reset_after_snapshot("10.0.0.8")
+        self.store.close.assert_not_called()
+        self.store.init.assert_not_called()
+        backend.ensure_initialized()
+        self.store.init.assert_called_once_with(0, init_bm=True)
+        self.store.register_buffer.assert_called_once_with(4096, 8192)
+
+    def test_snapshot_close_failure_stops_restore_before_reinit(self):
+        backend = self.make_backend(dp_size=1)
+        self.store.init.reset_mock()
+        self.store.close.side_effect = RuntimeError("MMC uninit failed")
+        with self.assertRaisesRegex(RuntimeError, "MMC uninit failed"):
+            backend.reset_after_snapshot("10.0.0.8")
+        self.store.init.assert_not_called()
+        self.assertIs(backend.store, self.store)
+
 
 class TestMemcacheBackendMethods(unittest.TestCase):
     def _make_backend(self):

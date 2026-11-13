@@ -276,6 +276,11 @@ class MemcacheBackend(Backend):
 
     @classmethod
     def create_scheduler_client(cls, parallel_config: ParallelConfig):
+        # TODO: With DP=1 and no assigned_physical_gpu_ids, device resolution
+        # calls torch.npu.current_device(), initializing NPU state in EngineCore
+        # despite init_bm=False. EngineCore ACL snapshots currently cover only
+        # Mooncake pools. Startup device mapping is unchanged pending validation
+        # of the effect on worker device selection.
         return cls(
             parallel_config,
             device_id=get_scheduler_device_id(parallel_config),
@@ -319,8 +324,8 @@ class MemcacheBackend(Backend):
     def prepare_for_snapshot_restore(self) -> None:
         if self._store_was_initialized is None:
             self._store_was_initialized = self._store_initialized
-        self.store = None
-        self._store_initialized = False
+        # MMC initialization is process-wide; dropping the wrapper does not uninit it.
+        self.close()
         self._pending_buffers = self._registered_buffers
 
         import gc
