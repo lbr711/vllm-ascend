@@ -104,10 +104,10 @@ def resume_worker(
             "update_worker_network",
             lambda: _update_worker_info(worker, local_ip, data_parallel_master_ip),
         ),
-        # Old HCCL QPs must release their references before KV transport frees
-        # the shared RDMA context. Finish both teardowns before creating groups.
-        ("destroy_parallel_groups", lambda: _parallel_group_cleanup(worker)),
+        # Keep HCCL groups alive while stores and TE release their old QPs/MRs.
+        # Finish both teardowns before creating new groups.
         ("destroy_kv_transfer_endpoint", lambda: _prepare_kv_transfer_for_snapshot_restore(worker)),
+        ("destroy_parallel_groups", lambda: _parallel_group_cleanup(worker)),
         ("rebuild_parallel_groups", lambda: _rebuild_parallel_groups(worker)),
         ("restore_model_checkpoint", lambda: restore_model_runner(worker.model_runner, model_path)),
         ("recapture_graph", lambda: _recapture_graph(worker)),
