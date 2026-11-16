@@ -520,7 +520,8 @@ def test_pdmix_scale_checkpoint_preserves_storage_and_role(snapshot_enabled, is_
 
 
 @pytest.mark.parametrize("fused_mc2", [False, True])
-def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2):
+@pytest.mark.parametrize("dp_size,nnodes", [(1, 1), (2, 1), (1, 2)])
+def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2, dp_size, nnodes):
     hook_ns = {"Base": object}
     load_nodes("ops/fused_moe/moe_comm_method.py", ["MoECommMethod"], hook_ns, {HOOK})
     base = hook_ns["MoECommMethod"]
@@ -543,6 +544,7 @@ def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2):
         "logger": Mock(),
         "set_current_vllm_config": lambda _: nullcontext(),
         "get_distributed_init_method": lambda ip, port: f"tcp://{ip}:{port}",
+        "get_ip": Mock(return_value="10.0.0.2"),
     }
     load_nodes("snapshot/worker_lifecycle.py", ["_rebuild_parallel_groups"], ns)
     force_ns = {"torch": torch}
@@ -553,7 +555,10 @@ def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2):
         rank=0,
         vllm_config=SimpleNamespace(
             parallel_config=SimpleNamespace(
-                data_parallel_master_ip="10.0.0.1", _snapshot_data_parallel_port_list=[29502]
+                data_parallel_master_ip="10.0.0.1",
+                data_parallel_size=dp_size,
+                nnodes=nnodes,
+                _snapshot_data_parallel_port_list=[29502],
             )
         ),
         _init_worker_distributed_environment=Mock(),
@@ -566,6 +571,9 @@ def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2):
     cache = method._force_eplb_topk_cache
     for _ in range(2):
         ns["_rebuild_parallel_groups"](worker)
+        expected_ip = "10.0.0.2" if (dp_size, nnodes) == (1, 1) else "10.0.0.1"
+        assert worker.distributed_init_method == f"tcp://{expected_ip}:29502"
+        assert worker.vllm_config.parallel_config.data_parallel_master_ip == "10.0.0.1"
         if fused_mc2:
             assert method.mega_moe_symm_buffer is None
         assert method._force_eplb_topk_cache is cache
@@ -575,6 +583,11 @@ def test_resume_clears_force_eplb_tables_before_reuse(monkeypatch, fused_mc2):
             assert rebuilt is not old
             torch.testing.assert_close(rebuilt, value)
     assert not hasattr(methods["unused"], "_force_eplb_topk_cache")
+    if (dp_size, nnodes) == (1, 1):
+        assert ns["get_ip"].call_count == 2
+        ns["get_ip"].assert_called_with(force=True)
+    else:
+        ns["get_ip"].assert_not_called()
 
 
 def test_pp_checkpoint_paths_isolate_stages_but_share_between_instances():
