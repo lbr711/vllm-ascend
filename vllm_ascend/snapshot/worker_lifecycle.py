@@ -170,8 +170,12 @@ def _rebuild_parallel_groups(worker) -> None:
 
     rebuild_time_start = time.time()
 
-    master_ip = worker.vllm_config.parallel_config.data_parallel_master_ip
-    if not master_ip:
+    parallel_config = worker.vllm_config.parallel_config
+    master_ip = parallel_config.data_parallel_master_ip
+    # Independent single-node DP replicas have a local TP/PP rank zero.
+    if parallel_config.data_parallel_size == 1 and parallel_config.nnodes == 1:
+        master_ip = get_ip(force=True)
+    if not master_ip or master_ip in ("0.0.0.0", "::"):
         raise RuntimeError("Unable to resolve master IP for distributed init method")
     resume_ports = worker.vllm_config.parallel_config._snapshot_data_parallel_port_list
     if not resume_ports:
