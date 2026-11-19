@@ -43,6 +43,28 @@ class _W4A8V1NZPackedCopyStrategy:
         dst.view(torch.int8).copy_(tmp)
 
 
+class _Int8NZCopyStrategy:
+    """Stage INT8 weights on the NPU before converting to the destination layout."""
+
+    def supports(self, tensor: torch.Tensor) -> bool:
+        return (
+            tensor.dtype == torch.int8
+            and tensor.device.type == "npu"
+            and int(torch_npu.get_npu_format(tensor)) == ACL_FORMAT_FRACTAL_NZ
+        )
+
+    def copy(self, dst: torch.Tensor, cpu_tensor: torch.Tensor) -> None:
+        if cpu_tensor.dtype != torch.int8 or cpu_tensor.shape != dst.shape:
+            # Preserve copy_ conversion and broadcasting for non-matching inputs.
+            dst.copy_(cpu_tensor)
+            return
+
+        nd = torch.empty(cpu_tensor.shape, dtype=torch.int8, device=dst.device)
+        nd.copy_(cpu_tensor.contiguous())
+        nz = torch_npu.npu_format_cast(nd, ACL_FORMAT_FRACTAL_NZ)
+        dst.copy_(nz)
+
+
 class _DirectCopyStrategy:
     """Copy tensors that do not require layout reconstruction."""
 
@@ -57,6 +79,7 @@ class _DirectCopyStrategy:
 # quant_description["version"] != "1.0.0" and W4A8_MXFP are not implemented.
 _TENSOR_COPY_STRATEGIES: tuple[_TensorCopyStrategy, ...] = (
     _W4A8V1NZPackedCopyStrategy(),
+    _Int8NZCopyStrategy(),
     _DirectCopyStrategy(),
 )
 
