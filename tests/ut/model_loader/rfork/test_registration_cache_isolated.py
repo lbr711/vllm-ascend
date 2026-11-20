@@ -17,7 +17,7 @@ def test_tensor_collection_deduplicates_exact_impl_alias_but_keeps_distinct_view
     model = torch.nn.Module()
     model.register_parameter("weight", weight)
     model.impl = SimpleNamespace(weight=weight, view=weight[:2])
-    monkeypatch.setattr(tensor_layout, "is_transferable_tensor", lambda _tensor: True)
+    monkeypatch.setattr(tensor_runtime.weight_state, "is_transferable_tensor", lambda _tensor: True)
 
     collected = tensor_layout.collect_transferable_tensors(model, processed_layout=True)
 
@@ -26,7 +26,7 @@ def test_tensor_collection_deduplicates_exact_impl_alias_but_keeps_distinct_view
 
 @pytest.mark.parametrize("processed_layout", [False, True])
 def test_collector_excludes_scheduler_sized_topk_indices_buffer(tensor_runtime, monkeypatch, processed_layout):
-    monkeypatch.setattr(tensor_runtime.tensor_layout, "is_transferable_tensor", lambda _tensor: True)
+    monkeypatch.setattr(tensor_runtime.weight_state, "is_transferable_tensor", lambda _tensor: True)
 
     def make_model(max_num_batched_tokens):
         model = torch.nn.Module()
@@ -115,7 +115,7 @@ def test_layout_summary_includes_npu_format_and_physical_size(tensor_runtime, mo
 
 def test_post_load_layout_summary_is_observational(tensor_runtime, monkeypatch, caplog):
     tensor_layout = tensor_runtime.tensor_layout
-    monkeypatch.setattr(tensor_layout, "is_tensor_on_transfer_device", lambda tensor: True)
+    monkeypatch.setattr(tensor_runtime.weight_state, "is_tensor_on_transfer_device", lambda tensor: True)
     model = torch.nn.Module()
     model.weight = torch.nn.Parameter(torch.arange(4, dtype=torch.float32))
     original = model.weight.detach().clone()
