@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mindie-motor-deploy
+  namespace: mindie-motor
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: mindie-motor-deployer
+      restartPolicy: Never
+      nodeSelector:
+        masterselector: dls-master-node
+      containers:
+        - name: deployer
+          image: mindie-motor-deployer:v3.2.0-ssd
+          imagePullPolicy: IfNotPresent
+          args: ["--skip-check"]
+          env:
+            - name: CONFIG_DIR
+              value: /config
+          volumeMounts:
+            - name: deploy-config
+              mountPath: /config
+              readOnly: true
+            - name: mmc-config
+              mountPath: /app/examples/deployer/startup/roles/kv_store_backends/memcache/mmc-local-inprocess.conf
+              subPath: mmc-local-inprocess.conf
+              readOnly: true
+            - name: mmc-config
+              mountPath: /app/examples/deployer/startup/roles/kv_store_backends/memcache/mmc-local-standalone.conf
+              subPath: mmc-local-standalone.conf
+              readOnly: true
+      volumes:
+        - name: deploy-config
+          configMap:
+            name: mindie-motor-user-config
+            items:
+              - key: user_config.json
+                path: user_config.json
+              - key: env.json
+                path: env.json
+        - name: mmc-config
+          configMap:
+            name: mindie-motor-mmc-config

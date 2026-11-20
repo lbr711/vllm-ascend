@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mindie-motor-cleanup
+  namespace: mindie-motor
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: mindie-motor-deployer
+      restartPolicy: Never
+      nodeSelector:
+        masterselector: dls-master-node
+      containers:
+        - name: cleanup
+          image: mindie-motor-deployer:v3.2.0-ssd
+          imagePullPolicy: IfNotPresent
+          command: ["/app/examples/cloud_native_deploy/entrypoint-cleanup.sh"]
+          env:
+            - name: NAMESPACE
+              value: mindie-motor
