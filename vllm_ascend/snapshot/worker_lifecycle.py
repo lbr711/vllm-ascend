@@ -8,6 +8,7 @@ import sys
 import time
 from ctypes import CDLL, c_int, c_void_p
 
+import torch
 from vllm.config import set_current_vllm_config
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.parallel_state import get_tp_group
@@ -75,6 +76,7 @@ def suspend_worker(worker, model_save_path: str | None = None) -> None:
         prepare_pipeline_for_snapshot(worker)
     steps = (
         ("dump_model_checkpoint", lambda: dump_model_runner(worker.model_runner, model_save_path)),
+        ("synchronize_npu", torch.npu.synchronize),
         ("collect_garbage", gc.collect),
         ("lock_snapshot_process", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessLock")),
         ("snapshot_process_backup", lambda: _call_aclrt_snapshot_api(worker, "aclrtSnapShotProcessBackup")),

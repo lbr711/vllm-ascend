@@ -82,21 +82,62 @@ def test_worker_snapshot_methods_delegate(worker):
 
 
 def test_snapshot_suspend_runs_npu_snapshot_sequence(worker):
+    events = []
     with (
-        patch("vllm_ascend.snapshot.worker_lifecycle.gc.collect") as collect,
-        patch("vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api") as call_aclrt,
-        patch("vllm_ascend.snapshot.worker_lifecycle.dump_model_runner") as dump_model,
+        patch(
+            "vllm_ascend.snapshot.worker_lifecycle.dump_model_runner",
+            side_effect=lambda *_: events.append("dump"),
+        ) as dump_model,
+        patch(
+            "vllm_ascend.snapshot.worker_lifecycle.torch.npu.synchronize",
+            side_effect=lambda: events.append("synchronize"),
+        ) as synchronize,
+        patch(
+            "vllm_ascend.snapshot.worker_lifecycle.gc.collect",
+            side_effect=lambda: events.append("gc"),
+        ) as collect,
+        patch(
+            "vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api",
+            side_effect=lambda _, api: events.append(api),
+        ) as call_aclrt,
     ):
         from vllm_ascend.snapshot.worker_lifecycle import suspend_worker
 
         suspend_worker(worker, "/tmp/model")
 
     dump_model.assert_called_once_with(worker.model_runner, "/tmp/model")
+    synchronize.assert_called_once_with()
     collect.assert_called_once_with()
     assert [call.args[1] for call in call_aclrt.call_args_list] == [
         "aclrtSnapShotProcessLock",
         "aclrtSnapShotProcessBackup",
     ]
+    assert events == [
+        "dump",
+        "synchronize",
+        "gc",
+        "aclrtSnapShotProcessLock",
+        "aclrtSnapShotProcessBackup",
+    ]
+
+
+def test_snapshot_suspend_stops_when_npu_synchronize_fails(worker):
+    with (
+        patch("vllm_ascend.snapshot.worker_lifecycle.dump_model_runner"),
+        patch(
+            "vllm_ascend.snapshot.worker_lifecycle.torch.npu.synchronize",
+            side_effect=RuntimeError("synchronize failed"),
+        ),
+        patch("vllm_ascend.snapshot.worker_lifecycle.gc.collect") as collect,
+        patch("vllm_ascend.snapshot.worker_lifecycle._call_aclrt_snapshot_api") as call_aclrt,
+        pytest.raises(RuntimeError, match="synchronize failed"),
+    ):
+        from vllm_ascend.snapshot.worker_lifecycle import suspend_worker
+
+        suspend_worker(worker, "/tmp/model")
+
+    collect.assert_not_called()
+    call_aclrt.assert_not_called()
 
 
 def test_snapshot_resume_runs_npu_restore_phases(worker):
