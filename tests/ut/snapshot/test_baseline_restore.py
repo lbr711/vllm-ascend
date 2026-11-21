@@ -863,6 +863,7 @@ def test_pp_hooks_are_snapshot_only_and_ordered(monkeypatch, pp_size):
         "time": SimpleNamespace(perf_counter=lambda: 0),
         "logger": Mock(),
         "gc": SimpleNamespace(collect=lambda: None),
+        "torch": SimpleNamespace(npu=SimpleNamespace(synchronize=lambda: events.append("synchronize"))),
         "dump_model_runner": lambda *_: events.append("dump"),
         "_call_aclrt_snapshot_api": lambda _, name: events.append(name),
         "snapshot_hccl_teardown": lambda _: nullcontext(),
@@ -880,6 +881,7 @@ def test_pp_hooks_are_snapshot_only_and_ordered(monkeypatch, pp_size):
     ns["suspend_worker"](worker)
     assert events == (["drain"] if pp_size > 1 else []) + [
         "dump",
+        "synchronize",
         "aclrtSnapShotProcessLock",
         "aclrtSnapShotProcessBackup",
     ]
