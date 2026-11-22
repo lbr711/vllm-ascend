@@ -997,7 +997,7 @@ def test_worker_snapshot_entrypoints_delegate_with_lazy_imports(monkeypatch):
 
 
 @pytest.mark.parametrize("fail_stage", [None, "destroy_groups", "destroy_kv"])
-def test_resume_destroys_kv_then_groups_before_rebuilding(fail_stage):
+def test_resume_destroys_groups_then_kv_before_rebuilding(fail_stage):
     events = []
 
     def cleanup(_worker):
@@ -1033,17 +1033,17 @@ def test_resume_destroys_kv_then_groups_before_rebuilding(fail_stage):
     if fail_stage is not None:
         with pytest.raises(RuntimeError, match="teardown failed"):
             ns["resume_worker"](worker, "master-ip")
-        expected = ["aclrtSnapShotProcessRestore", "aclrtSnapShotProcessUnlock", "destroy_kv"]
-        if fail_stage == "destroy_groups":
-            expected.append("destroy_groups")
+        expected = ["aclrtSnapShotProcessRestore", "aclrtSnapShotProcessUnlock", "destroy_groups"]
+        if fail_stage == "destroy_kv":
+            expected.append("destroy_kv")
         assert events == expected
     else:
         ns["resume_worker"](worker, "master-ip")
         assert events == [
             "aclrtSnapShotProcessRestore",
             "aclrtSnapShotProcessUnlock",
-            "destroy_kv",
             "destroy_groups",
+            "destroy_kv",
             "groups",
             "model",
             "graph",
