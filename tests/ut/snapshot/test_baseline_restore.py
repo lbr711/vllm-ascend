@@ -416,6 +416,35 @@ def test_restore_rebuilds_only_initialized_kv_zeroers(v2, initialized):
     assert phases == (["modules", "zeroer"] if initialized else ["modules"])
 
 
+@pytest.mark.parametrize(
+    "mode, exchange, reduce",
+    [
+        ("PCP_X_TP", "pcp", "tp"),
+        ("PCP_X_TP", None, None),
+        ("FINE_GRAINED", "embed_tp", None),
+        ("FINE_GRAINED", None, None),
+        ("STANDARD", None, "tp"),
+        ("REPLICATED", None, None),
+    ],
+)
+def test_vocab_restore_rebinds_only_active_groups(mode, exchange, reduce):
+    from enum import Enum, auto
+
+    path = "ops/vocab_parallel_embedding.py"
+    groups = {name: object() for name in ("pcp", "tp", "embed_tp")}
+    ns = {"Enum": Enum, "auto": auto, "Base": object}
+    ns.update({f"get_{name}_group": Mock(return_value=group) for name, group in groups.items()})
+    load_nodes(path, ["VocabParallelMode"], ns)
+    load_nodes(path, ["AscendVocabParallelEmbedding"], ns, methods=[HOOK])
+    layer = ns["AscendVocabParallelEmbedding"]()
+    layer.parallel_mode = ns["VocabParallelMode"][mode]
+    layer.token_exchange_group = object() if exchange else None
+    layer.output_reduce_group = object() if reduce else None
+    layer.reset_runtime_state_after_snapshot_restore()
+    assert layer.token_exchange_group is groups.get(exchange)
+    assert layer.output_reduce_group is groups.get(reduce)
+
+
 def test_pool_restore_does_not_require_removed_gva_cache():
     ns = {"Base": object}
     load_nodes(
