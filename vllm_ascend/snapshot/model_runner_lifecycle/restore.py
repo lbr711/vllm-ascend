@@ -241,6 +241,7 @@ def _reset_v2_runner_runtime_state(runner) -> None:
     if runner.pcp_manager is not None:
         runner.pcp_manager.vllm_config = runner.vllm_config
         runner.pcp_manager.kv_cache_config = runner.kv_cache_config
+        runner.pcp_manager.global_input_buffers = runner.input_buffers
         runner.model_state.pcp_manager = runner.pcp_manager
         if runner.speculator is not None:
             runner.speculator.pcp_manager = runner.pcp_manager
