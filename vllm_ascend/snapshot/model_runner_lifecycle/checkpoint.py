@@ -2,7 +2,7 @@
 
 import os
 
-from vllm.distributed.parallel_state import get_pp_group, get_tp_group
+from vllm.distributed.parallel_state import get_pcp_group, get_pp_group, get_tp_group
 
 from vllm_ascend.snapshot.model_runner_lifecycle.module_lifecycle import (
     dump_state_dict,
@@ -20,6 +20,9 @@ def model_checkpoint_path(runner, path: str, *, drafter: bool = False) -> str:
     if parallel.pipeline_parallel_size > 1:
         directory += f"_pp{parallel.pipeline_parallel_size}"
         rank += f"pp{get_pp_group().rank_in_group}"
+    if parallel.prefill_context_parallel_size > 1:
+        directory += f"_pcp{parallel.prefill_context_parallel_size}"
+        rank += f"pcp{get_pcp_group().rank_in_group}"
     prefix = "model_ckpt_drafter" if drafter else "model_ckpt"
     return os.path.join(path, "snapshot_weight", directory, f"{prefix}.{rank}.pth")
 

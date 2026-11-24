@@ -623,7 +623,7 @@ def test_pp_checkpoint_paths_isolate_stages_but_share_between_instances():
     tp, pp = SimpleNamespace(rank_in_group=0), SimpleNamespace(rank_in_group=0)
     ns = {"os": os, "get_tp_group": lambda: tp, "get_pp_group": lambda: pp}
     load_nodes("snapshot/model_runner_lifecycle/checkpoint.py", ["model_checkpoint_path"], ns)
-    config = SimpleNamespace(tensor_parallel_size=2, pipeline_parallel_size=2)
+    config = SimpleNamespace(tensor_parallel_size=2, pipeline_parallel_size=2, prefill_context_parallel_size=1)
     runner = SimpleNamespace(
         dp_size=2,
         dp_rank=0,
@@ -641,6 +641,23 @@ def test_pp_checkpoint_paths_isolate_stages_but_share_between_instances():
     assert len(paths) == 8
     config.pipeline_parallel_size = 1
     assert ns["model_checkpoint_path"](runner, "/shared") == "/shared/snapshot_weight/glm_dp2_tp2/model_ckpt.1tp1.pth"
+
+
+@pytest.mark.parametrize("drafter", [False, True])
+def test_pcp_checkpoint_paths_isolate_all_eight_workers(drafter):
+    pcp = SimpleNamespace(rank_in_group=0)
+    ns = {"os": os, "get_tp_group": lambda: SimpleNamespace(rank_in_group=0), "get_pcp_group": lambda: pcp}
+    load_nodes("snapshot/model_runner_lifecycle/checkpoint.py", ["model_checkpoint_path"], ns)
+    parallel = SimpleNamespace(tensor_parallel_size=1, pipeline_parallel_size=1, prefill_context_parallel_size=8)
+    runner = SimpleNamespace(
+        dp_size=2, dp_rank=1,
+        vllm_config=SimpleNamespace(parallel_config=parallel, model_config=SimpleNamespace(model="dsv4")),
+    )
+    prefix = "model_ckpt_drafter" if drafter else "model_ckpt"
+    for rank in range(8):
+        pcp.rank_in_group = rank
+        path = ns["model_checkpoint_path"](runner, "/shared", drafter=drafter)
+        assert path == f"/shared/snapshot_weight/dsv4_dp2_tp1_pcp8/{prefix}.1tp0pcp{rank}.pth"
 
 
 def test_pp_checkpoint_reuses_completed_shard_without_overwriting(tmp_path):
@@ -992,7 +1009,7 @@ def test_pp_target_and_last_stage_drafter_checkpoint_roundtrip(tmp_path, last):
         get_model=lambda: model,
         model_config=SimpleNamespace(dtype=torch.float32),
         vllm_config=SimpleNamespace(
-            parallel_config=SimpleNamespace(tensor_parallel_size=2, pipeline_parallel_size=2),
+            parallel_config=SimpleNamespace(tensor_parallel_size=2, pipeline_parallel_size=2, prefill_context_parallel_size=1),
             model_config=SimpleNamespace(model="glm"),
         ),
     )
