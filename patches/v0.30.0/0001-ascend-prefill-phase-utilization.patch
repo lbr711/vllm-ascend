@@ -1,27 +1,28 @@
-From 0624cbd174f4fce25fcc983a873a5061d3cb6669 Mon Sep 17 00:00:00 2001
+From e3674b475208b4ce338aaaa66cf82b0912566475 Mon Sep 17 00:00:00 2001
 From: lbr711 <liuboru1@huawei.com>
-Date: Sat, 28 Nov 2026 22:39:01 +0800
-Subject: [PATCH] feat(metrics): track prefill phase starts in Ascend
- schedulers
+Date: Sun, 29 Nov 2026 00:38:18 +0800
+Subject: [PATCH] feat(metrics): integrate Ascend schedulers with prefill phase
+ coverage
 
-Connect custom scheduler admission paths to the paired vLLM prefill phase coverage collector and document installation and metric semantics.
+Consolidated implementation against v0.30.0, excluding packaged patch files. Requires the paired vLLM distributed DP export implementation.
 
 Co-authored-by: Codex <noreply@openai.com>
+
 Signed-off-by: lbr711 <liuboru1@huawei.com>
 ---
- .../developer_guide/prefill_phase_metrics.md  | 40 +++++++++++++++++++
+ .../developer_guide/prefill_phase_metrics.md  | 43 +++++++++++++++++++
  vllm_ascend/core/dyntra_lb_scheduler.py       |  1 +
  vllm_ascend/core/recompute_scheduler.py       |  1 +
  vllm_ascend/core/scheduler_profiling_chunk.py |  1 +
- 4 files changed, 43 insertions(+)
+ 4 files changed, 46 insertions(+)
  create mode 100644 docs/source/developer_guide/prefill_phase_metrics.md
 
 diff --git a/docs/source/developer_guide/prefill_phase_metrics.md b/docs/source/developer_guide/prefill_phase_metrics.md
 new file mode 100644
-index 000000000..3b0273444
+index 000000000..b2fcd58f8
 --- /dev/null
 +++ b/docs/source/developer_guide/prefill_phase_metrics.md
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,43 @@
 +# Prefill phase coverage metrics
 +
 +This branch requires the matching vLLM `feat/prefill-phase-utilization` branch
@@ -50,8 +51,11 @@ index 000000000..3b0273444
 +The gauge has `model_name` and `engine` labels. It reports the last completed
 +fixed window, starts at zero, and is refreshed during long prefills and idle
 +periods. Each DP engine has its own window origin and series. A frontend scrape
-+reads the existing Prometheus multiprocess files; it does not run the
-+calculation. No coordinator modification is needed to query the engine metric.
++exports the engine's window results delivered through the EngineCore output
++channel; it does not run the calculation. Distributed DP with one client/API
++server does not require a shared Prometheus directory. Use the matching updated
++vLLM branch; the original engine-local gauge implementation is insufficient for
++this deployment. No coordinator modification is needed to query the engine metric.
 +
 +Overlapping request intervals count once. A chunked request remains active
 +until its first token or termination, including waits and preemptions. The
