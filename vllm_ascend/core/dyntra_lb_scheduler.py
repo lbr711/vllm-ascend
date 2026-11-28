@@ -1006,6 +1006,7 @@ class DyntraLBScheduler(DyntraLBPolicyMixin, Scheduler):
                     continue
 
                 self.running.append(request)
+                self._record_prefill_phase_start(request)
                 if self.log_stats:
                     request.record_event(EngineCoreEventType.SCHEDULED, scheduled_timestamp)
                 if request.status == RequestStatus.WAITING:

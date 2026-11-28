@@ -1019,6 +1019,7 @@ class ProfilingChunkScheduler(Scheduler):
                     continue
 
                 self.running.append(request)
+                self._record_prefill_phase_start(request)
                 if num_external_computed_tokens > 0:
                     # load_kv_async is False here
                     has_sync_kv_loads = True
