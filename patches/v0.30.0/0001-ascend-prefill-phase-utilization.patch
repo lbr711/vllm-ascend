@@ -1,0 +1,103 @@
+From 0624cbd174f4fce25fcc983a873a5061d3cb6669 Mon Sep 17 00:00:00 2001
+From: lbr711 <liuboru1@huawei.com>
+Date: Sat, 28 Nov 2026 22:39:01 +0800
+Subject: [PATCH] feat(metrics): track prefill phase starts in Ascend
+ schedulers
+
+Connect custom scheduler admission paths to the paired vLLM prefill phase coverage collector and document installation and metric semantics.
+
+Co-authored-by: Codex <noreply@openai.com>
+Signed-off-by: lbr711 <liuboru1@huawei.com>
+---
+ .../developer_guide/prefill_phase_metrics.md  | 40 +++++++++++++++++++
+ vllm_ascend/core/dyntra_lb_scheduler.py       |  1 +
+ vllm_ascend/core/recompute_scheduler.py       |  1 +
+ vllm_ascend/core/scheduler_profiling_chunk.py |  1 +
+ 4 files changed, 43 insertions(+)
+ create mode 100644 docs/source/developer_guide/prefill_phase_metrics.md
+
+diff --git a/docs/source/developer_guide/prefill_phase_metrics.md b/docs/source/developer_guide/prefill_phase_metrics.md
+new file mode 100644
+index 000000000..3b0273444
+--- /dev/null
++++ b/docs/source/developer_guide/prefill_phase_metrics.md
+@@ -0,0 +1,40 @@
++# Prefill phase coverage metrics
++
++This branch requires the matching vLLM `feat/prefill-phase-utilization` branch
++based on v0.30.0. Install both branches together. The implementation lives in
++vLLM's independent `vllm.v1.metrics.prefill_phase` module; Ascend only adds the
++admission hook to schedulers that override upstream `schedule()`:
++`RecomputeScheduler`, `DyntraLBScheduler` and `ProfilingChunkScheduler`.
++First-token and termination hooks are inherited from the upstream scheduler.
++
++Add this option to the P engine's existing launch command:
++
++```bash
++--prefill-phase-metrics-interval 3
++```
++
++Do not use `--disable-log-stats`. The feature is disabled by default; an invalid
++interval or an enabled feature with log stats disabled is rejected. There is
++no fallback to the sum of request durations or device synchronization.
++
++Query each engine's `/metrics` endpoint:
++
++```promql
++100 * vllm:prefill_phase_utilization
++```
++
++The gauge has `model_name` and `engine` labels. It reports the last completed
++fixed window, starts at zero, and is refreshed during long prefills and idle
++periods. Each DP engine has its own window origin and series. A frontend scrape
++reads the existing Prometheus multiprocess files; it does not run the
++calculation. No coordinator modification is needed to query the engine metric.
++
++Overlapping request intervals count once. A chunked request remains active
++until its first token or termination, including waits and preemptions. The
++result is phase time coverage, not NPU execution utilization or a throughput
++capacity estimate. It does not replace Motor's existing utilization metrics.
++
++The implementation adds CPU lifecycle bookkeeping and one sampler thread per
++enabled scheduler. It adds no NPU events or synchronizations. Validate throughput,
++TTFT and TPOT with collection disabled and enabled on the target Ascend system
++before rollout; CPU unit tests cannot establish production performance.
+diff --git a/vllm_ascend/core/dyntra_lb_scheduler.py b/vllm_ascend/core/dyntra_lb_scheduler.py
+index a5db678fe..18bf3b9f0 100644
+--- a/vllm_ascend/core/dyntra_lb_scheduler.py
++++ b/vllm_ascend/core/dyntra_lb_scheduler.py
+@@ -1006,6 +1006,7 @@ class DyntraLBScheduler(DyntraLBPolicyMixin, Scheduler):
+                     continue
+ 
+                 self.running.append(request)
++                self._record_prefill_phase_start(request)
+                 if self.log_stats:
+                     request.record_event(EngineCoreEventType.SCHEDULED, scheduled_timestamp)
+                 if request.status == RequestStatus.WAITING:
+diff --git a/vllm_ascend/core/recompute_scheduler.py b/vllm_ascend/core/recompute_scheduler.py
+index b666df588..a43a453b4 100644
+--- a/vllm_ascend/core/recompute_scheduler.py
++++ b/vllm_ascend/core/recompute_scheduler.py
+@@ -815,6 +815,7 @@ class RecomputeScheduler(Scheduler):
+                     continue
+ 
+                 self.running.append(request)
++                self._record_prefill_phase_start(request)
+                 if num_external_computed_tokens > 0:
+                     # load_kv_async is False here
+                     has_sync_kv_loads = True
+diff --git a/vllm_ascend/core/scheduler_profiling_chunk.py b/vllm_ascend/core/scheduler_profiling_chunk.py
+index 6ad7eea2b..d19c0bba5 100644
+--- a/vllm_ascend/core/scheduler_profiling_chunk.py
++++ b/vllm_ascend/core/scheduler_profiling_chunk.py
+@@ -1019,6 +1019,7 @@ class ProfilingChunkScheduler(Scheduler):
+                     continue
+ 
+                 self.running.append(request)
++                self._record_prefill_phase_start(request)
+                 if num_external_computed_tokens > 0:
+                     # load_kv_async is False here
+                     has_sync_kv_loads = True
+-- 
+2.53.0
+
