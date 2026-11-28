@@ -26,8 +26,11 @@ Query each engine's `/metrics` endpoint:
 The gauge has `model_name` and `engine` labels. It reports the last completed
 fixed window, starts at zero, and is refreshed during long prefills and idle
 periods. Each DP engine has its own window origin and series. A frontend scrape
-reads the existing Prometheus multiprocess files; it does not run the
-calculation. No coordinator modification is needed to query the engine metric.
+exports the engine's window results delivered through the EngineCore output
+channel; it does not run the calculation. Distributed DP with one client/API
+server does not require a shared Prometheus directory. Use the matching updated
+vLLM branch; the original engine-local gauge implementation is insufficient for
+this deployment. No coordinator modification is needed to query the engine metric.
 
 Overlapping request intervals count once. A chunked request remains active
 until its first token or termination, including waits and preemptions. The
